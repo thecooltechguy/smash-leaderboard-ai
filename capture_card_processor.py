@@ -116,7 +116,7 @@ class SmashBrosProcessor:
         # Timing parameters
         self.frames_since_ready = 0
         self.frames_since_black = 0
-        self.black_screen_duration_threshold_secs = 1.0 #2.0  # 2 seconds
+        self.black_screen_duration_threshold_secs = consecutive_black_threshold_secs  # Use same threshold as black period detection
         self.ready_to_game_timeout = 600  # 10 seconds max from ready to game start
         
         # Consecutive black frame detection
