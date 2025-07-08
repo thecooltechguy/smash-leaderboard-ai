@@ -551,7 +551,7 @@ class SmashBrosProcessor:
                     # Extract player stats using Gemini API
                     match_stats = self.get_match_stats(result_filepath)
                     
-                    if match_stats:
+                    if match_stats and match_stats[0]["is_online_match"] == False:
                         # Save match stats to database
                         self.save_match_stats(match_stats)
                     else:
@@ -919,6 +919,7 @@ Output the following information about the game's results as valid json followin
 ```
 [
 {
+\"is_online_match\" : boolean,
 \"smash_character\" : string,
 \"player_name\" : string,
 \"is_cpu\" : boolean,
@@ -936,7 +937,9 @@ keep the following in mind:
 - the total number of KOs is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"KOs\" label, then you can count the number of mini character icons shown under the \"KOs\" section of the character card
 - total number of falls is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"Falls\" label, then you can count the number of mini character icons shown under the \"Falls\" section of the character card
 - total number of SDs is an integer number located to the right of the label, and cannot be null
-- \"has_won\" denotes whether or not the character won (labeled with a gold-colored number 1 at the top right of the player card. if there is no such number ranking on the top right, then the character did not win; for \"no contest\" matches, no character wins)"""),
+- \"has_won\" denotes whether or not the character won (labeled with a gold-colored number 1 at the top right of the player card. if there is no such number ranking on the top right, then the character did not win; for \"no contest\" matches, no character wins)
+- \"is_online_match\" if you see "onlineacc" as one of the labels under the character card, then this is an online match, otherwise it is an offline match
+"""),
                     ],
                 ),
             ]
