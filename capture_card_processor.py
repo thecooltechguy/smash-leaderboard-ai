@@ -934,11 +934,12 @@ Output the following information about the game's results as valid json followin
 
 keep the following in mind:
 
-- the total number of KOs is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"KOs\" label, then you can count the number of mini character icons shown under the \"KOs\" section of the character card
-- total number of falls is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"Falls\" label, then you can count the number of mini character icons shown under the \"Falls\" section of the character card
-- total number of SDs is an integer number located to the right of the label, and cannot be null
+- the total number of KOs is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"KOs\" label, then instead, the KO's are counted by counting the number of mini character icons shown under the \"KOs\" section of the character card
+- total number of falls is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"Falls\" label, then instead, the falls are counted by counting the number of mini character icons shown under the \"Falls\" section of the character card
+- total number of SDs is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"SDs\" label, then instead, the SD's are counted by counting the number of mini character icons shown under the \"SDs\" section of the character card
 - \"has_won\" denotes whether or not the character won (labeled with a gold-colored number 1 at the top right of the player card. if there is no such number ranking on the top right, then the character did not win; for \"no contest\" matches, no character wins)
 - \"is_online_match\" if you see "onlineacc" as one of the labels under the character card, then this is an online match, otherwise it is an offline match
+- If is_cpu is false, then it's impossible to have only 1 player in the match. Really make sure that you have identified all the players in the match.
 """),
                     ],
                 ),
