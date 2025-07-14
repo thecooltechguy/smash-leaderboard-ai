@@ -8,6 +8,7 @@ import time
 import argparse
 from enum import Enum
 import math
+import logging
 from typing import List, Optional
 from google import genai
 from google.genai import types
@@ -156,12 +157,37 @@ class SmashBrosProcessor:
         self.result_screens_dir = os.path.join(output_dir, "result_screens")
         if not os.path.exists(self.result_screens_dir):
             os.makedirs(self.result_screens_dir)
+        
+        # Setup logging
+        self.setup_logging()
+    
+    def setup_logging(self):
+        """Setup logging to file and console"""
+        # Create log filename with timestamp
+        log_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_filename = f"{log_timestamp}_smash_capture.log"
+        log_filepath = os.path.join(self.output_dir, log_filename)
+        
+        # Setup logging configuration
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_filepath),
+                logging.StreamHandler()  # Also log to console
+            ]
+        )
+        
+        self.logger = logging.getLogger(__name__)
+        self.logger.info(f"Smash Bros Capture Processor started - Log file: {log_filename}")
+        self.logger.info(f"Test mode: {self.test_mode}")
+        self.logger.info(f"Output directory: {self.output_dir}")
     
     def initialize_capture(self):
         """Initialize video capture"""
         if self.test_mode and self.test_video_path:
             self.cap = cv2.VideoCapture(self.test_video_path)
-            print(f"Initialized test mode with video: {self.test_video_path}")
+            self.logger.info(f"Initialized test mode with video: {self.test_video_path}")
             # self.cap.set(cv2.CAP_PROP_FPS, 60)
         else:
             # Try different backends for capture card
@@ -170,7 +196,7 @@ class SmashBrosProcessor:
             for backend in backends:
                 self.cap = cv2.VideoCapture(self.device_index, backend)
                 if self.cap.isOpened():
-                    print(f"Successfully opened capture device with backend: {backend}")
+                    self.logger.info(f"Successfully opened capture device with backend: {backend}")
                     break
             
             if not self.cap or not self.cap.isOpened():
@@ -185,9 +211,9 @@ class SmashBrosProcessor:
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.fps = int(self.cap.get(cv2.CAP_PROP_FPS)) if int(self.cap.get(cv2.CAP_PROP_FPS)) > 0 else 30
-        print("FPS: ", self.fps)
+        self.logger.info(f"FPS: {self.fps}")
         
-        print(f"Capture initialized at {self.width}x{self.height} @ {self.fps}fps")
+        self.logger.info(f"Capture initialized at {self.width}x{self.height} @ {self.fps}fps")
     
     def detect_ready_to_fight(self, frame):
         """
@@ -252,7 +278,7 @@ class SmashBrosProcessor:
             # print(f"Confidence: {confidence:.4f}")
             return confidence, confidence > self.ready_confidence_threshold
         except Exception as e:
-            print(f"Error in detect_ready_to_fight: {e}")
+            self.logger.error(f"Error in detect_ready_to_fight: {e}")
             return 0.0, False
     
     def detect_game_end(self, frame):
@@ -288,7 +314,7 @@ class SmashBrosProcessor:
             
             return confidence, confidence >= self.game_end_confidence_threshold
         except Exception as e:
-            print(f"Error in detect_game_end: {e}")
+            self.logger.error(f"Error in detect_game_end: {e}")
             return 0.0, False
     
     def is_black_screen(self, frame):
@@ -300,7 +326,7 @@ class SmashBrosProcessor:
             avg_brightness = np.mean(gray) / 255.0
             return avg_brightness, avg_brightness < self.black_screen_threshold
         except Exception as e:
-            print(f"Error in is_black_screen: {e}")
+            self.logger.error(f"Error in is_black_screen: {e}")
             return 0.0, False
     
     def format_timestamp(self, frame_number):
@@ -463,10 +489,10 @@ class SmashBrosProcessor:
         self.out = cv2.VideoWriter(filepath, fourcc, self.fps, (self.width, self.height))
         
         if not self.out.isOpened():
-            print(f"Warning: Failed to create video writer for {filepath}")
+            self.logger.warning(f"Failed to create video writer for {filepath}")
             return None
         
-        print(f"Started recording match {self.match_counter}: {filename}")
+        self.logger.info(f"Started recording match {self.match_counter}: {filename}")
         
         # Write buffered frames (pre-game footage)
         # for buffered_frame in self.frame_buffer:
@@ -506,7 +532,7 @@ class SmashBrosProcessor:
         if self.out:
             self.out.release()
             self.out = None
-            print(f"Stopped recording match {self.match_counter}")
+            self.logger.info(f"Stopped recording match {self.match_counter}")
             
             # Extract result screens if we have recorded frames
             self.extract_result_screens()
@@ -521,10 +547,10 @@ class SmashBrosProcessor:
         Extract and save result screen frames from the recorded match
         """
         if not self.recording_frames or not self.recording_game_end_scores:
-            print("No recorded frames or game end scores to process for result screens")
+            self.logger.warning("No recorded frames or game end scores to process for result screens")
             return
         
-        print(f"Analyzing {len(self.recording_frames)} recorded frames for result screen extraction...")
+        self.logger.info(f"Analyzing {len(self.recording_frames)} recorded frames for result screen extraction...")
         
         # Find the last frame with highest game end confidence above threshold
         best_frame_index = -1
@@ -539,14 +565,14 @@ class SmashBrosProcessor:
                 break  # We want the last (most recent) frame with high confidence
         
         if best_frame_index == -1:
-            print("No frame found with game end confidence above threshold for result screens")
+            self.logger.warning("No frame found with game end confidence above threshold for result screens")
             return
         
         # Extract frames from the best frame to the end
         result_frames = self.recording_frames[best_frame_index:]
         
         if len(result_frames) < 30:  # Less than 0.5 seconds at 60fps
-            print(f"Result screen sequence too short ({len(result_frames)} frames), skipping")
+            self.logger.warning(f"Result screen sequence too short ({len(result_frames)} frames), skipping")
             return
         
         # Create result screen video filename
@@ -559,7 +585,7 @@ class SmashBrosProcessor:
         result_out = cv2.VideoWriter(result_filepath, fourcc, self.fps, (self.width, self.height))
         
         if not result_out.isOpened():
-            print(f"Warning: Failed to create result screen video writer for {result_filepath}")
+            self.logger.warning(f"Failed to create result screen video writer for {result_filepath}")
             return
         
         # Write result screen frames
@@ -571,10 +597,10 @@ class SmashBrosProcessor:
         # Calculate duration
         duration_seconds = len(result_frames) / self.fps if self.fps > 0 else 0
         
-        print(f"Saved result screens: {result_filename}")
-        print(f"  Duration: {duration_seconds:.2f} seconds ({len(result_frames)} frames)")
-        print(f"  Starting from frame with confidence: {best_confidence:.3f}")
-        print(f"  Frame index in match: {best_frame_index}/{len(self.recording_frames)-1}")
+        self.logger.info(f"Saved result screens: {result_filename}")
+        self.logger.info(f"  Duration: {duration_seconds:.2f} seconds ({len(result_frames)} frames)")
+        self.logger.info(f"  Starting from frame with confidence: {best_confidence:.3f}")
+        self.logger.info(f"  Frame index in match: {best_frame_index}/{len(self.recording_frames)-1}")
         
         # Extract player stats and save to database (only when NOT in test mode)
         if not self.test_mode:
@@ -672,17 +698,17 @@ class SmashBrosProcessor:
         # State machine logic
         if self.state == GameState.WAITING:
             if ready_detected:
-                print("Detected 'READY TO FIGHT!' - Starting recording immediately...")
+                self.logger.info("Detected 'READY TO FIGHT!' - Starting recording immediately...")
                 if self.test_mode:
                     timestamp = self.format_timestamp(self.current_frame_number)
-                    print(f"  [TEST MODE] Ready detected at: {timestamp} (Frame {self.current_frame_number}) - Confidence: {ready_confidence:.3f}")
+                    self.logger.info(f"  [TEST MODE] Ready detected at: {timestamp} (Frame {self.current_frame_number}) - Confidence: {ready_confidence:.3f}")
                 
                 # Start recording immediately
                 self.start_match_recording()
                 self.game_start_frame = self.current_frame_number
                 if self.test_mode:
                     timestamp = self.format_timestamp(self.current_frame_number)
-                    print(f"  [TEST MODE] *** GAME START at: {timestamp} (Frame {self.current_frame_number}) ***")
+                    self.logger.info(f"  [TEST MODE] *** GAME START at: {timestamp} (Frame {self.current_frame_number}) ***")
                 self.state = GameState.RECORDING
                 self.frames_since_black = 0
         
@@ -715,19 +741,19 @@ class SmashBrosProcessor:
             if is_black:
                 self.frames_since_black += 1
                 if self.frames_since_black > (self.black_screen_duration_threshold_secs * self.fps):
-                    print("Detected sustained black screen - ending recording...")
+                    self.logger.info("Detected sustained black screen - ending recording...")
                     self.stop_match_recording()
                     self.game_end_frame = self.current_frame_number
                     if self.test_mode:
                         timestamp = self.format_timestamp(self.current_frame_number)
-                        print(f"  [TEST MODE] *** GAME END at: {timestamp} (Frame {self.current_frame_number}) *** - Brightness: {avg_brightness:.3f}")
+                        self.logger.info(f"  [TEST MODE] *** GAME END at: {timestamp} (Frame {self.current_frame_number}) *** - Brightness: {avg_brightness:.3f}")
                         if self.game_start_frame:
                             duration_frames = self.game_end_frame - self.game_start_frame
                             duration_seconds = duration_frames / self.fps if self.fps > 0 else 0
-                            print(f"  [TEST MODE] Match duration: {duration_seconds:.2f} seconds ({duration_frames} frames)")
+                            self.logger.info(f"  [TEST MODE] Match duration: {duration_seconds:.2f} seconds ({duration_frames} frames)")
                     self.state = GameState.WAITING
                     self.frames_since_black = 0
-                    print("Waiting for next match...")
+                    self.logger.info("Waiting for next match...")
             else:
                 self.frames_since_black = 0
         
@@ -739,13 +765,13 @@ class SmashBrosProcessor:
         """
         Main processing loop
         """
-        print("Starting Smash Bros match processor...")
-        print(f"State: {self.state.value}")
+        self.logger.info("Starting Smash Bros match processor...")
+        self.logger.info(f"State: {self.state.value}")
         
         if self.test_mode and not self.play_video:
-            print("Test mode: Fast offline processing (no video display)")
+            self.logger.info("Test mode: Fast offline processing (no video display)")
         elif self.test_mode and self.play_video:
-            print("Test mode: Real-time video playback")
+            self.logger.info("Test mode: Real-time video playback")
         
         try:
             self.initialize_capture()
@@ -757,10 +783,10 @@ class SmashBrosProcessor:
                 ret, frame = self.cap.read()
                 if not ret:
                     if self.test_mode:
-                        print("Reached end of test video")
+                        self.logger.info("Reached end of test video")
                         break
                     else:
-                        print("Failed to read frame")
+                        self.logger.warning("Failed to read frame")
                         continue
                 
                 # Process the frame
@@ -779,7 +805,7 @@ class SmashBrosProcessor:
                     if frame_count % 1000 == 0:
                         elapsed = time.time() - start_time
                         fps_processed = frame_count / elapsed if elapsed > 0 else 0
-                        print(f"Processed {frame_count} frames ({fps_processed:.1f} fps) - State: {self.state.value}")
+                        self.logger.info(f"Processed {frame_count} frames ({fps_processed:.1f} fps) - State: {self.state.value}")
                 else:
                     # Real-time playback or live capture - show display
                     # Create display frame with status (resize to save memory)
