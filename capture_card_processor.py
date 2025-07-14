@@ -145,6 +145,8 @@ class SmashBrosProcessor:
         self.recording_game_end_scores = []  # Store game end confidence scores during recording
         self.current_recording_frame_index = 0  # Track frame index within current recording
         self.max_recording_frames = 3600  # Limit to ~1 minute at 60fps to prevent memory issues
+        self.frame_skip_count = 0  # Skip frames to reduce memory usage
+        self.frame_skip_interval = 2  # Store every 2nd frame to reduce memory usage
         
         # Create output directory
         if not os.path.exists(output_dir):
@@ -192,102 +194,114 @@ class SmashBrosProcessor:
         Detect the Super Smash Bros logo (bright yellow/orange circular logo with cross)
         that appears right before the game starts
         """
-        # Convert to HSV for better color detection
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        
-        # Focus on the center area where the logo appears
-        h, w = frame.shape[:2]
-        center_region = frame[int(h*self.center_region_top):int(h*self.center_region_bottom), int(w*self.center_region_left):int(w*self.center_region_right)]
-        
-        # Check if the overall frame is mostly black (characteristic of this screen)
-        gray_full = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        avg_brightness = np.mean(gray_full) / 255.0
-        
-        # The screen should be mostly black with a bright logo
-        if avg_brightness > 0.15:  # Too bright overall, not the logo screen
+        try:
+            # Convert to HSV for better color detection
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            
+            # Focus on the center area where the logo appears
+            h, w = frame.shape[:2]
+            center_region = frame[int(h*self.center_region_top):int(h*self.center_region_bottom), int(w*self.center_region_left):int(w*self.center_region_right)]
+            
+            # Check if the overall frame is mostly black (characteristic of this screen)
+            gray_full = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            avg_brightness = np.mean(gray_full) / 255.0
+            
+            # The screen should be mostly black with a bright logo
+            if avg_brightness > 0.15:  # Too bright overall, not the logo screen
+                return 0.0, False
+            
+            # Look for the bright yellow/orange logo in the center region
+            center_hsv = cv2.cvtColor(center_region, cv2.COLOR_BGR2HSV)
+            
+            # Define range for yellow/orange colors (the logo color)
+            lower_yellow_orange = np.array([15, 100, 150])  # More restrictive to catch bright yellows/oranges
+            upper_yellow_orange = np.array([35, 255, 255])
+            
+            logo_mask = cv2.inRange(center_hsv, lower_yellow_orange, upper_yellow_orange)
+            
+            # Calculate the percentage of yellow/orange pixels in center region
+            logo_ratio = np.sum(logo_mask > 0) / (logo_mask.shape[0] * logo_mask.shape[1])
+            
+            # Look for circular/round bright areas (the logo is circular)
+            gray_center = cv2.cvtColor(center_region, cv2.COLOR_BGR2GRAY)
+            
+            # Find very bright areas (the glowing logo)
+            bright_mask = gray_center > 180
+            bright_ratio = np.sum(bright_mask) / (bright_mask.shape[0] * bright_mask.shape[1])
+            
+            # Look for the cross pattern within the bright area
+            # The cross creates dark lines through the bright circular logo
+            if bright_ratio > 0.02:  # Only check for cross if we have enough bright pixels
+                # Apply morphological operations to find the cross pattern
+                kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (5, 5))
+                cross_enhanced = cv2.morphologyEx(bright_mask.astype(np.uint8), cv2.MORPH_OPEN, kernel)
+                cross_ratio = np.sum(cross_enhanced > 0) / (cross_enhanced.shape[0] * cross_enhanced.shape[1])
+            else:
+                cross_ratio = 0.0
+            
+            # Combine all metrics
+            # - High logo color ratio
+            # - Sufficient bright area (the glowing effect)
+            # - Dark background (low overall brightness)
+            # - Cross pattern detection
+            background_darkness = max(0, (0.15 - avg_brightness) / 0.15)  # Higher score for darker backgrounds
+            
+            confidence = (logo_ratio * 3 + bright_ratio * 2 + cross_ratio * 1 + background_darkness * 1) / 7
+            
+            # print(f"Logo detection - Logo ratio: {logo_ratio:.4f}, Bright ratio: {bright_ratio:.4f}, Cross ratio: {cross_ratio:.4f}, Background darkness: {background_darkness:.4f}, Overall brightness: {avg_brightness:.4f}")
+            # print(f"Confidence: {confidence:.4f}")
+            return confidence, confidence > self.ready_confidence_threshold
+        except Exception as e:
+            print(f"Error in detect_ready_to_fight: {e}")
             return 0.0, False
-        
-        # Look for the bright yellow/orange logo in the center region
-        center_hsv = cv2.cvtColor(center_region, cv2.COLOR_BGR2HSV)
-        
-        # Define range for yellow/orange colors (the logo color)
-        lower_yellow_orange = np.array([15, 100, 150])  # More restrictive to catch bright yellows/oranges
-        upper_yellow_orange = np.array([35, 255, 255])
-        
-        logo_mask = cv2.inRange(center_hsv, lower_yellow_orange, upper_yellow_orange)
-        
-        # Calculate the percentage of yellow/orange pixels in center region
-        logo_ratio = np.sum(logo_mask > 0) / (logo_mask.shape[0] * logo_mask.shape[1])
-        
-        # Look for circular/round bright areas (the logo is circular)
-        gray_center = cv2.cvtColor(center_region, cv2.COLOR_BGR2GRAY)
-        
-        # Find very bright areas (the glowing logo)
-        bright_mask = gray_center > 180
-        bright_ratio = np.sum(bright_mask) / (bright_mask.shape[0] * bright_mask.shape[1])
-        
-        # Look for the cross pattern within the bright area
-        # The cross creates dark lines through the bright circular logo
-        if bright_ratio > 0.02:  # Only check for cross if we have enough bright pixels
-            # Apply morphological operations to find the cross pattern
-            kernel = cv2.getStructuringElement(cv2.MORPH_CROSS, (5, 5))
-            cross_enhanced = cv2.morphologyEx(bright_mask.astype(np.uint8), cv2.MORPH_OPEN, kernel)
-            cross_ratio = np.sum(cross_enhanced > 0) / (cross_enhanced.shape[0] * cross_enhanced.shape[1])
-        else:
-            cross_ratio = 0.0
-        
-        # Combine all metrics
-        # - High logo color ratio
-        # - Sufficient bright area (the glowing effect)
-        # - Dark background (low overall brightness)
-        # - Cross pattern detection
-        background_darkness = max(0, (0.15 - avg_brightness) / 0.15)  # Higher score for darker backgrounds
-        
-        confidence = (logo_ratio * 3 + bright_ratio * 2 + cross_ratio * 1 + background_darkness * 1) / 7
-        
-        # print(f"Logo detection - Logo ratio: {logo_ratio:.4f}, Bright ratio: {bright_ratio:.4f}, Cross ratio: {cross_ratio:.4f}, Background darkness: {background_darkness:.4f}, Overall brightness: {avg_brightness:.4f}")
-        # print(f"Confidence: {confidence:.4f}")
-        return confidence, confidence > self.ready_confidence_threshold
     
     def detect_game_end(self, frame):
         """
         Detect game end by looking for 'GAME!' text or victory screen elements
         """
-        # Convert to HSV
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        
-        # Focus on upper center area where "GAME!" typically appears
-        h, w = frame.shape[:2]
-        game_region = frame[int(h*self.game_region_top):int(h*self.game_region_bottom), int(w*self.game_region_left):int(w*self.game_region_right)]
-        
-        # Look for bright yellow/white text (typical of "GAME!" text)
-        gray_game = cv2.cvtColor(game_region, cv2.COLOR_BGR2GRAY)
-        
-        # Look for very bright areas (GAME! text is usually very bright)
-        bright_mask = gray_game > 200
-        bright_ratio = np.sum(bright_mask) / (bright_mask.shape[0] * bright_mask.shape[1])
-        
-        # Look for result screen UI elements (usually has specific color patterns)
-        # game_hsv = cv2.cvtColor(game_region, cv2.COLOR_BGR2HSV)
-        
-        # Check for blue UI elements (common in results screen)
-        # lower_blue = np.array([100, 50, 50])
-        # upper_blue = np.array([130, 255, 255])
-        # blue_mask = cv2.inRange(game_hsv, lower_blue, upper_blue)
-        # blue_ratio = np.sum(blue_mask > 0) / (blue_mask.shape[0] * blue_mask.shape[1])
-        
-        # Combine metrics
-        confidence = bright_ratio #(bright_ratio + blue_ratio * 0.5)
-        
-        return confidence, confidence >= self.game_end_confidence_threshold
+        try:
+            # Convert to HSV
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            
+            # Focus on upper center area where "GAME!" typically appears
+            h, w = frame.shape[:2]
+            game_region = frame[int(h*self.game_region_top):int(h*self.game_region_bottom), int(w*self.game_region_left):int(w*self.game_region_right)]
+            
+            # Look for bright yellow/white text (typical of "GAME!" text)
+            gray_game = cv2.cvtColor(game_region, cv2.COLOR_BGR2GRAY)
+            
+            # Look for very bright areas (GAME! text is usually very bright)
+            bright_mask = gray_game > 200
+            bright_ratio = np.sum(bright_mask) / (bright_mask.shape[0] * bright_mask.shape[1])
+            
+            # Look for result screen UI elements (usually has specific color patterns)
+            # game_hsv = cv2.cvtColor(game_region, cv2.COLOR_BGR2HSV)
+            
+            # Check for blue UI elements (common in results screen)
+            # lower_blue = np.array([100, 50, 50])
+            # upper_blue = np.array([130, 255, 255])
+            # blue_mask = cv2.inRange(game_hsv, lower_blue, upper_blue)
+            # blue_ratio = np.sum(blue_mask > 0) / (blue_mask.shape[0] * blue_mask.shape[1])
+            
+            # Combine metrics
+            confidence = bright_ratio #(bright_ratio + blue_ratio * 0.5)
+            
+            return confidence, confidence >= self.game_end_confidence_threshold
+        except Exception as e:
+            print(f"Error in detect_game_end: {e}")
+            return 0.0, False
     
     def is_black_screen(self, frame):
         """
         Detect if the frame is mostly black
         """
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        avg_brightness = np.mean(gray) / 255.0
-        return avg_brightness, avg_brightness < self.black_screen_threshold
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            avg_brightness = np.mean(gray) / 255.0
+            return avg_brightness, avg_brightness < self.black_screen_threshold
+        except Exception as e:
+            print(f"Error in is_black_screen: {e}")
+            return 0.0, False
     
     def format_timestamp(self, frame_number):
         """
@@ -441,7 +455,7 @@ class SmashBrosProcessor:
         Start recording a new match
         """
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"match_{self.match_counter:03d}_{timestamp}.mp4"
+        filename = f"{timestamp}_match_{self.match_counter:03d}.mp4"
         filepath = os.path.join(self.output_dir, filename)
         
         # Use H.264 codec for better compatibility
@@ -461,11 +475,29 @@ class SmashBrosProcessor:
         self.current_match_frames = []
         
         # Reset result screen tracking for new match
-        self.recording_frames = []
-        self.recording_game_end_scores = []
+        self.clear_frame_buffers()
         self.current_recording_frame_index = 0
+        self.frame_skip_count = 0
         
         return filepath
+    
+    def clear_frame_buffers(self):
+        """
+        Clear frame buffers to free memory
+        """
+        # Clear recording frames
+        if self.recording_frames:
+            self.recording_frames.clear()
+        if self.recording_game_end_scores:
+            self.recording_game_end_scores.clear()
+        
+        # Clear frame buffer if it's too large
+        if len(self.frame_buffer) > self.buffer_size // 2:
+            self.frame_buffer = self.frame_buffer[-self.buffer_size // 2:]
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
     
     def stop_match_recording(self):
         """
@@ -478,6 +510,9 @@ class SmashBrosProcessor:
             
             # Extract result screens if we have recorded frames
             self.extract_result_screens()
+            
+            # Clear frame buffers to free memory
+            self.clear_frame_buffers()
             
             self.match_counter += 1
     
@@ -516,7 +551,7 @@ class SmashBrosProcessor:
         
         # Create result screen video filename
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_filename = f"result_screen_match_{self.match_counter:03d}_{timestamp}.mp4"
+        result_filename = f"{timestamp}_result_screen_match_{self.match_counter:03d}.mp4"
         result_filepath = os.path.join(self.result_screens_dir, result_filename)
         
         # Create video writer for result screens
@@ -628,10 +663,11 @@ class SmashBrosProcessor:
             
             self.consecutive_black_frames = 0
         
-        # Add frame to buffer (for pre-game footage)
-        self.frame_buffer.append(frame.copy())
-        if len(self.frame_buffer) > self.buffer_size:
-            self.frame_buffer.pop(0)
+        # Add frame to buffer (for pre-game footage) - but only if we're not recording to save memory
+        if self.state != GameState.RECORDING:
+            self.frame_buffer.append(frame.copy())
+            if len(self.frame_buffer) > self.buffer_size:
+                self.frame_buffer.pop(0)
         
         # State machine logic
         if self.state == GameState.WAITING:
@@ -659,15 +695,21 @@ class SmashBrosProcessor:
             if self.out:
                 self.out.write(frame)
             
-            # Store frame and game end confidence for result screen extraction
-            self.recording_frames.append(frame.copy())
-            self.recording_game_end_scores.append(game_end_confidence)
-            self.current_recording_frame_index += 1
+            # Store frame and game end confidence for result screen extraction (with frame skipping)
+            self.frame_skip_count += 1
+            if self.frame_skip_count >= self.frame_skip_interval:
+                self.recording_frames.append(frame.copy())
+                self.recording_game_end_scores.append(game_end_confidence)
+                self.frame_skip_count = 0
+                
+                # Limit memory usage by keeping only the most recent frames
+                if len(self.recording_frames) > self.max_recording_frames:
+                    # Remove oldest frames in chunks to prevent frequent memory operations
+                    chunk_size = min(50, len(self.recording_frames) // 4)
+                    self.recording_frames = self.recording_frames[chunk_size:]
+                    self.recording_game_end_scores = self.recording_game_end_scores[chunk_size:]
             
-            # Limit memory usage by keeping only the most recent frames
-            if len(self.recording_frames) > self.max_recording_frames:
-                self.recording_frames.pop(0)
-                self.recording_game_end_scores.pop(0)
+            self.current_recording_frame_index += 1
             
             # Check for game end using sustained black screen (3 seconds)
             if is_black:
@@ -725,6 +767,11 @@ class SmashBrosProcessor:
                 self.process_frame(frame)
                 frame_count += 1
                 
+                # Periodic memory cleanup
+                if frame_count % 1000 == 0:
+                    import gc
+                    gc.collect()
+                
                 # Handle display and timing based on mode
                 if self.test_mode and not self.play_video:
                     # Fast offline processing - no display, no delays
@@ -735,8 +782,8 @@ class SmashBrosProcessor:
                         print(f"Processed {frame_count} frames ({fps_processed:.1f} fps) - State: {self.state.value}")
                 else:
                     # Real-time playback or live capture - show display
-                    # Create display frame with status
-                    display_frame = frame.copy()
+                    # Create display frame with status (resize to save memory)
+                    display_frame = cv2.resize(frame, (960, 540))
                     
                     # Add status overlay
                     status_text = f"State: {self.state.value}"
@@ -776,9 +823,8 @@ class SmashBrosProcessor:
                         cv2.putText(display_frame, f"Frame: {self.current_frame_number} ({timestamp})", (10, y_offset + 140), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
                     
-                    # Show preview (smaller window)
-                    small_frame = cv2.resize(display_frame, (960, 540))
-                    cv2.imshow('Smash Bros Match Processor', small_frame)
+                    # Show preview (already resized)
+                    cv2.imshow('Smash Bros Match Processor', display_frame)
                     
                     # Handle key presses and timing
                     if self.test_mode and self.play_video:
