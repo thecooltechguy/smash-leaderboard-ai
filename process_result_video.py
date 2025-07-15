@@ -72,8 +72,8 @@ class ResultVideoProcessor:
     
     def setup_logging(self):
         """Setup logging to file and console"""
-        log_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_filename = f"{log_timestamp}_result_processor.log"
+        # Use a fixed log filename that gets overwritten each time
+        log_filename = "result_processor.log"
         
         # Create logs directory if it doesn't exist
         log_dir = os.path.dirname(self.video_path)
@@ -83,10 +83,15 @@ class ResultVideoProcessor:
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(log_filepath),
+                logging.FileHandler(log_filepath, mode='w'),  # 'w' mode overwrites the file
                 logging.StreamHandler()
-            ]
+            ],
+            force=True  # Force reconfiguration if already configured
         )
+        
+        # Suppress verbose HTTP logging from Google API client
+        logging.getLogger('google.auth.transport.requests').setLevel(logging.WARNING)
+        logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
         
         self.logger = logging.getLogger(__name__)
         self.logger.info(f"Result Video Processor started - Log file: {log_filename}")
@@ -160,7 +165,7 @@ keep the following in mind:
 - total number of falls is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"Falls\" label, then instead, the falls are counted by counting the number of mini character icons shown under the \"Falls\" section of the character card
 - total number of SDs is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"SDs\" label, then instead, the SD's are counted by counting the number of mini character icons shown under the \"SDs\" section of the character card
 - \"has_won\" denotes whether or not the character won (labeled with a gold-colored number 1 at the top right of the player card. if there is no such number ranking on the top right, then the character did not win; for \"no contest\" matches, no character wins)
-- \"is_online_match\" if you see "onlineacc" as one of the labels under the character card, then this is an online match, otherwise it is an offline match
+- \"is_online_match\" There are likely to be 2 players in the match. If you see "onlineacc" as one of the player names, then return true, otherwise it is an offline match. If the player name is not "onlineacc" or "offlineacc", return false.
 - If is_cpu is false, then it's impossible to have only 1 player in the match. Really make sure that you have identified all the players in the match.
 """),
                     ],
