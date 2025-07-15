@@ -189,23 +189,43 @@ class SmashBrosProcessor:
         self.logger.info(f"Output directory: {self.output_dir}")
     
     def initialize_capture(self):
-        """Initialize video capture"""
+        """Initialize video capture with exponential backoff retry"""
         if self.test_mode and self.test_video_path:
             self.cap = cv2.VideoCapture(self.test_video_path)
             self.logger.info(f"Initialized test mode with video: {self.test_video_path}")
             # self.cap.set(cv2.CAP_PROP_FPS, 60)
         else:
+            # Exponential backoff configuration
+            max_retries = 10
+            base_delay = 1.0  # seconds
+            max_delay = 60.0  # seconds
+            
             # Try different backends for capture card
             backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
             
-            for backend in backends:
-                self.cap = cv2.VideoCapture(self.device_index, backend)
-                if self.cap.isOpened():
-                    self.logger.info(f"Successfully opened capture device with backend: {backend}")
+            for attempt in range(max_retries):
+                self.logger.info(f"Capture card detection attempt {attempt + 1}/{max_retries}")
+                
+                for backend in backends:
+                    try:
+                        self.cap = cv2.VideoCapture(self.device_index, backend)
+                        if self.cap.isOpened():
+                            self.logger.info(f"Successfully opened capture device with backend: {backend}")
+                            break
+                    except Exception as e:
+                        self.logger.warning(f"Failed to open capture device with backend {backend}: {e}")
+                        continue
+                
+                if self.cap and self.cap.isOpened():
                     break
+                
+                # Calculate delay for exponential backoff
+                delay = min(base_delay * (2 ** attempt), max_delay)
+                self.logger.warning(f"Capture card not detected, retrying in {delay:.1f} seconds...")
+                time.sleep(delay)
             
             if not self.cap or not self.cap.isOpened():
-                raise Exception("Failed to open capture device")
+                raise Exception(f"Failed to open capture device after {max_retries} attempts")
             
             # Set capture properties
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
