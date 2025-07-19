@@ -1030,7 +1030,7 @@ Output the following information about the game's results as valid json followin
 ```
 
 keep the following in mind:
-- player names are listed beside P1, P2, P3, etc and under the actual smash character name. Examples of player names: habeas, shafaq, jmoon, subby, keneru, kento etc. Note: Player names are not the same as the smash character name. Zelda, Joker, Lucina, Donkey Kong are smash character names, not player names. Player names are the people playing the game.
+- player names are listed BESIDE P1, P2, P3, etc and under the actual smash character name. Note, Player Names are NOT P1, P2, P3, etc. Examples of player names: habeas, shafaq, jmoon, subby, keneru, kento etc. Note: Player names are not the same as the smash character name. Zelda, Joker, Lucina, Donkey Kong are smash character names, not player names. Player names are the people playing the game.
 - the total number of KOs is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"KOs\" label, then instead, the KO's are counted by counting the number of mini character icons shown under the \"KOs\" section of the character card
 - total number of falls is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"Falls\" label, then instead, the falls are counted by counting the number of mini character icons shown under the \"Falls\" section of the character card
 - total number of SDs is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"SDs\" label, then instead, the SD's are counted by counting the number of mini character icons shown under the \"SDs\" section of the character card
