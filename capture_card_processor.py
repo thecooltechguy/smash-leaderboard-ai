@@ -66,7 +66,7 @@ class SmashBrosProcessor:
     def __init__(self, device_index=0, output_dir="matches", test_mode=False, test_video_path=None,
                  center_region_top=0.3, center_region_bottom=0.7, center_region_left=0.1, center_region_right=0.9,
                  game_region_top=0.1, game_region_bottom=0.5, game_region_left=0.2, game_region_right=0.8,
-                 consecutive_black_threshold_secs=0.5, play_video=False):
+                 consecutive_black_threshold_secs=0.5, play_video=False, video_slowdown_factor=10):
         """
         Initialize the Smash Bros match processor
         
@@ -85,12 +85,14 @@ class SmashBrosProcessor:
             game_region_right: Right boundary for game region (0.0-1.0)
             consecutive_black_threshold_secs: Minimum consecutive black screen duration in seconds to detect as a black period
             play_video: Whether to play the video in real-time (test mode only)
+            video_slowdown_factor: Factor to slow down result screen videos for better API processing (default: 10)
         """
         self.device_index = device_index
         self.output_dir = output_dir
         self.test_mode = test_mode
         self.test_video_path = test_video_path
         self.play_video = play_video
+        self.video_slowdown_factor = video_slowdown_factor
         
         # Region boundaries (as fractions of frame dimensions)
         self.center_region_top = center_region_top
@@ -973,7 +975,7 @@ class SmashBrosProcessor:
         # Return as integers
         return round(new_rating_a), round(new_rating_b)
     
-    def get_match_stats(self, match_results_video_filepath: str, slowdown_factor: int = 5) -> Optional[List[PlayerStats]]:
+    def get_match_stats(self, match_results_video_filepath: str, slowdown_factor: int = None) -> Optional[List[PlayerStats]]:
         """
         Extract player stats from a match results video using Gemini API
         """
@@ -981,8 +983,13 @@ class SmashBrosProcessor:
             print("Warning: Gemini client not available, skipping stats extraction")
             return None
         
+        # Use instance slowdown factor if not provided
+        if slowdown_factor is None:
+            slowdown_factor = self.video_slowdown_factor
+        
         try:
             print(f"Extracting player stats from result screen video: {match_results_video_filepath}")
+            print(f"Using video slowdown factor: {slowdown_factor}x")
             
             # First use ffmpeg to slow down the video
             final_video_filepath = "./current_match_results_video.mp4"
@@ -1279,6 +1286,9 @@ def main():
     # Black frame detection arguments
     parser.add_argument('--black-frame-threshold-secs', type=float, default=0.5, help='Minimum consecutive black screen duration in seconds to detect as a black period (default: 0.5)')
     
+    # Video processing arguments
+    parser.add_argument('--video-slowdown-factor', type=int, default=10, help='Factor to slow down result screen videos for better API processing (default: 10)')
+    
     args = parser.parse_args()
     
     if args.test and not args.video:
@@ -1322,7 +1332,8 @@ def main():
         game_region_left=args.game_region_left,
         game_region_right=args.game_region_right,
         consecutive_black_threshold_secs=args.black_frame_threshold_secs,
-        play_video=args.play_video
+        play_video=args.play_video,
+        video_slowdown_factor=args.video_slowdown_factor
     )
     
     # Handle test-threshold mode
