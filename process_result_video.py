@@ -114,7 +114,7 @@ class ResultVideoProcessor:
             
             # First use ffmpeg to slow down the video
             final_video_filepath = "./temp_processed_video.mp4"
-            ffmpeg_cmd = f"ffmpeg -y -an -i \"{self.video_path}\" -vf \"setpts={self.slowdown_factor}*PTS\" \"{final_video_filepath}\" -loglevel quiet"
+            ffmpeg_cmd = f"ffmpeg -y -an -i \"{self.video_path}\" -vf \"setpts={self.slowdown_factor}*PTS\" -map_metadata 0 \"{final_video_filepath}\" -loglevel quiet"
             
             self.logger.info(f"Slowing down video by factor of {self.slowdown_factor}")
             if os.system(ffmpeg_cmd) != 0:

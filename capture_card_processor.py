@@ -9,6 +9,7 @@ import argparse
 from enum import Enum
 import math
 import logging
+import subprocess
 from typing import List, Optional
 from google import genai
 from google.genai import types
@@ -133,6 +134,7 @@ class SmashBrosProcessor:
         
         # Match counter
         self.match_counter = 1
+        self.current_match_filepath = None
         
         # Test mode tracking
         self.current_frame_number = 0
@@ -519,6 +521,9 @@ class SmashBrosProcessor:
             self.logger.warning(f"Failed to create video writer for {filepath}")
             return None
         
+        # Store current match filepath for metadata addition later
+        self.current_match_filepath = filepath
+        
         self.logger.info(f"Started recording match {self.match_counter}: {filename}")
         
         # Write buffered frames (pre-game footage)
@@ -640,6 +645,11 @@ class SmashBrosProcessor:
                     match_stats = self.get_match_stats(result_filepath)
                     
                     if match_stats and match_stats[0].is_online_match == False:
+                        # Add metadata to result screen video
+                        if os.path.exists(result_filepath):
+                            participant_names = [stat.player_name for stat in match_stats]
+                            self.add_metadata_to_mp4(result_filepath, participant_names)
+                        
                         # Save match stats to database
                         self.save_match_stats(match_stats)
                     else:
@@ -993,7 +1003,7 @@ class SmashBrosProcessor:
             
             # First use ffmpeg to slow down the video
             final_video_filepath = "./current_match_results_video.mp4"
-            ffmpeg_cmd = f"ffmpeg -y -an -i \"{match_results_video_filepath}\" -vf \"setpts={slowdown_factor}*PTS\" \"{final_video_filepath}\" -loglevel quiet"
+            ffmpeg_cmd = f"ffmpeg -y -an -i \"{match_results_video_filepath}\" -vf \"setpts={slowdown_factor}*PTS\" -map_metadata 0 \"{final_video_filepath}\" -loglevel quiet"
             
             if os.system(ffmpeg_cmd) != 0:
                 print("Error: Failed to process video with ffmpeg")
@@ -1227,9 +1237,46 @@ keep the following in mind:
             
             print("="*60)
             
+            # Add metadata to match video file
+            if self.current_match_filepath and os.path.exists(self.current_match_filepath):
+                participant_names = [stat.player_name for stat in stats]
+                self.add_metadata_to_mp4(self.current_match_filepath, participant_names)
+            
         except Exception as e:
             print(f"Error saving match stats: {e}")
     
+    def add_metadata_to_mp4(self, filepath: str, participants: List[str]):
+        """Add participant names to MP4 file metadata"""
+        if not participants:
+            return
+        
+        participants_str = ', '.join(participants)
+        temp_filepath = filepath + '.temp.mp4'
+        
+        try:
+            ffmpeg_cmd = [
+                'ffmpeg', '-y', '-i', filepath,
+                '-c', 'copy',
+                '-metadata', f'title=Smash Bros Match - {participants_str}',
+                '-metadata', f'comment=Participants: {participants_str}',
+                '-metadata', f'description=Super Smash Bros Ultimate match with participants: {participants_str}',
+                temp_filepath
+            ]
+            
+            result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                os.replace(temp_filepath, filepath)
+                self.logger.info(f"Added metadata to {filepath}: {participants_str}")
+            else:
+                self.logger.warning(f"Failed to add metadata to {filepath}: {result.stderr}")
+                if os.path.exists(temp_filepath):
+                    os.remove(temp_filepath)
+        except Exception as e:
+            self.logger.warning(f"Error adding metadata to {filepath}: {e}")
+            if os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+
     def cleanup(self):
         """
         Clean up resources
