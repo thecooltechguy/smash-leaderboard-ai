@@ -1027,7 +1027,7 @@ Output the following information about the game's results as valid json followin
 \"player_name\" : string,
 \"is_cpu\" : boolean,
 \"total_kos\" : int,
-\"total_falls\" : int,
+\"total_falls\" : int (positive integer, even if it shows negative),
 \"total_sds\" : int,
 \"has_won\" : boolean,
 \"is_online_match\" : boolean,
@@ -1044,6 +1044,8 @@ keep the following in mind:
 - \"has_won\" denotes whether or not the character won (labeled with a gold-colored number 1 at the top right of the player card. if there is no such number ranking on the top right, then the character did not win; for \"no contest\" matches, no character wins)
 - \"is_online_match\" There are likely to be 2 players in the match. If you see "onlineacc" as one of the player names, then return true, otherwise it is an offline match. If the player name is not "onlineacc" or "offlineacc", return false.
 - If all people playing the game have a player name, then is_cpu must be false. If is_cpu is false, then it's impossible to have only 1 player in the match. Really make sure that you have identified all the players in the match. is_cpu is ONLY TRUE if it says "CPU" on the player card. Otherwise, it is false.
+- If you see "mmmmm" as a player name, the player name has 5 'm's as letters. Not more not less.
+- Sometimes the rectangular player card does not show the KO's, Falls, or SD's, but instead shows "READY FOR THE NEXT BATTLE". In this case, set the player name to "unknown" (all in lowercase), with 0 for the total number of KOs, Falls, and SDs and not cpu and not online and not has_won and smash character also as "unknown".
 """),
                     ],
                 ),
