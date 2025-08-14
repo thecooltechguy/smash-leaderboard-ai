@@ -237,7 +237,7 @@ class SmashBrosProcessor:
         # Get actual properties
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.fps = int(self.cap.get(cv2.CAP_PROP_FPS)) if int(self.cap.get(cv2.CAP_PROP_FPS)) > 0 else 30
+        self.fps = 30
         self.logger.info(f"FPS: {self.fps}")
         
         self.logger.info(f"Capture initialized at {self.width}x{self.height} @ {self.fps}fps")
