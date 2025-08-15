@@ -17,13 +17,16 @@ import os
 import sys
 import time
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import re
+import pandas as pd
+import pytz
+from elo_utils import calculate_elo_update_for_streaming
 
 # Load environment variables
 load_dotenv()
@@ -225,6 +228,8 @@ keep the following in mind:
 
         # Return as integers
         return round(new_rating_a), round(new_rating_b)
+
+    # Note: Rank ceiling functions now imported from elo_utils.py
     
     def get_player(self, player_name: str) -> Optional[dict]:
         """Get or create a player in the database"""
@@ -373,7 +378,17 @@ keep the following in mind:
                 old_elo_2 = players[1]['elo']
                 
                 winner_index = 1 if players[0]['has_won'] else 2
-                new_elo_1, new_elo_2 = self.update_elo(old_elo_1, old_elo_2, 'A' if winner_index == 1 else 'B')
+                winner = 'A' if winner_index == 1 else 'B'
+                
+                # Use shared ELO calculation with automatic rank ceiling detection
+                new_elo_1, new_elo_2, ceiling_applied = calculate_elo_update_for_streaming(
+                    old_elo_1, old_elo_2, winner,
+                    players[0]['id'], players[1]['id'],
+                    supabase_client
+                )
+                
+                if ceiling_applied:
+                    self.logger.info("    🚫 Rank ceiling applied!")
                 
                 self.update_player_elo(players[0]['id'], new_elo_1)
                 self.update_player_elo(players[1]['id'], new_elo_2)
@@ -382,8 +397,9 @@ keep the following in mind:
                 elo_change_1 = new_elo_1 - old_elo_1
                 elo_change_2 = new_elo_2 - old_elo_2
                 
-                self.logger.info(f"  {players[0]['name']}: {old_elo_1} → {new_elo_1} ({elo_change_1:+d})")
-                self.logger.info(f"  {players[1]['name']}: {old_elo_2} → {new_elo_2} ({elo_change_2:+d})")
+                ceiling_status = " (with rank ceiling)" if ceiling_applied else ""
+                self.logger.info(f"  {players[0]['name']}: {old_elo_1} → {new_elo_1} ({elo_change_1:+d}){ceiling_status}")
+                self.logger.info(f"  {players[1]['name']}: {old_elo_2} → {new_elo_2} ({elo_change_2:+d}){ceiling_status}")
             
             self.logger.info("=" * 60)
             return True

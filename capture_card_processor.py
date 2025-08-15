@@ -10,7 +10,10 @@ from enum import Enum
 import math
 import logging
 import subprocess
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
+import pandas as pd
+import pytz
+from elo_utils import calculate_elo_update_for_streaming
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
@@ -162,6 +165,9 @@ class SmashBrosProcessor:
         self.result_screens_dir = os.path.join(output_dir, "result_screens")
         if not os.path.exists(self.result_screens_dir):
             os.makedirs(self.result_screens_dir)
+        
+        # Store Supabase client as instance variable
+        self.supabase_client = supabase_client
         
         # Setup logging
         self.setup_logging()
@@ -984,6 +990,10 @@ class SmashBrosProcessor:
 
         # Return as integers
         return round(new_rating_a), round(new_rating_b)
+
+    # Note: Rank ceiling functions now imported from elo_utils.py
+
+
     
     def get_match_stats(self, match_results_video_filepath: str, slowdown_factor: int = None) -> Optional[List[PlayerStats]]:
         """
@@ -1089,12 +1099,12 @@ keep the following in mind:
     
     def get_player(self, player_name: str) -> Optional[dict]:
         """Get or create a player in the database"""
-        if not supabase_client:
+        if not self.supabase_client:
             return None
         
         try:
             response = (
-                supabase_client.table("players")
+                self.supabase_client.table("players")
                 .upsert({"display_name": player_name}, on_conflict="display_name")
                 .execute()
             )
@@ -1105,19 +1115,19 @@ keep the following in mind:
         
     def update_player_elo(self, player_id: str, elo: int):
         """Update a player's ELO in the database"""
-        if not supabase_client:
+        if not self.supabase_client:
             return
         
-        supabase_client.table("players").update({"elo": elo}).eq("id", player_id).execute()
+        self.supabase_client.table("players").update({"elo": elo}).eq("id", player_id).execute()
     
     def create_match(self) -> Optional[int]:
         """Create a new match in the database"""
-        if not supabase_client:
+        if not self.supabase_client:
             return None
         
         try:
             response = (
-                supabase_client.table("matches")
+                self.supabase_client.table("matches")
                 .insert({})
                 .execute()
             )
@@ -1129,7 +1139,7 @@ keep the following in mind:
     def save_match_stats(self, stats: List[PlayerStats], match_id: Optional[int] = None):
         """Save match stats to the database"""
         print(stats)
-        if not supabase_client:
+        if not self.supabase_client:
             print("Warning: Supabase client not available, skipping database save")
             return
         
@@ -1172,7 +1182,7 @@ keep the following in mind:
                 
                 # Save match participant
                 response = (
-                    supabase_client.table("match_participants")
+                    self.supabase_client.table("match_participants")
                     .insert({
                         "player": player['id'], 
                         "smash_character": stat.smash_character.upper(),
@@ -1223,7 +1233,17 @@ keep the following in mind:
                 old_elo_2 = players[1]['elo']
                 
                 winner_index = 1 if players[0]['has_won'] else 2
-                new_elo_1, new_elo_2 = self.update_elo(old_elo_1, old_elo_2, 'A' if winner_index == 1 else 'B')
+                winner = 'A' if winner_index == 1 else 'B'
+                
+                # Use shared ELO calculation with automatic rank ceiling detection
+                new_elo_1, new_elo_2, ceiling_applied = calculate_elo_update_for_streaming(
+                    old_elo_1, old_elo_2, winner,
+                    players[0]['id'], players[1]['id'],
+                    self.supabase_client
+                )
+                
+                if ceiling_applied:
+                    print("    🚫 Rank ceiling applied!")
                 
                 self.update_player_elo(players[0]['id'], new_elo_1)
                 self.update_player_elo(players[1]['id'], new_elo_2)
@@ -1232,8 +1252,9 @@ keep the following in mind:
                 elo_change_1 = new_elo_1 - old_elo_1
                 elo_change_2 = new_elo_2 - old_elo_2
                 
-                print(f"  {players[0]['name']}: {old_elo_1} → {new_elo_1} ({elo_change_1:+d})")
-                print(f"  {players[1]['name']}: {old_elo_2} → {new_elo_2} ({elo_change_2:+d})")
+                ceiling_status = " (with rank ceiling)" if ceiling_applied else ""
+                print(f"  {players[0]['name']}: {old_elo_1} → {new_elo_1} ({elo_change_1:+d}){ceiling_status}")
+                print(f"  {players[1]['name']}: {old_elo_2} → {new_elo_2} ({elo_change_2:+d}){ceiling_status}")
             
             print("="*60)
             

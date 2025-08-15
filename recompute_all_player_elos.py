@@ -18,6 +18,11 @@ from supabase import create_client, Client
 from dotenv import load_dotenv
 from datetime import datetime, timezone
 import pytz
+from elo_utils import (
+    RANK_CEILING_START_DATE, update_elo, get_player_ranking, 
+    get_elo_ceiling, get_inactive_player_last_match_dates_from_dataframes,
+    calculate_elo_update_for_batch
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -36,17 +41,7 @@ except Exception as e:
     print(f"Error: Failed to initialize Supabase client: {e}")
     exit(1)
 
-# Rank ceiling implementation date - only apply ceiling after this date (California time)
-pacific_tz = pytz.timezone('America/Los_Angeles')
-RANK_CEILING_START_DATE = pacific_tz.localize(datetime(2025, 8, 15, 0, 0, 0))
-
-def get_player_ranking(player_id: str, current_elos: Dict[str, int]) -> int:
-    """Get the current ranking of a player based on ELO"""
-    sorted_players = sorted(current_elos.items(), key=lambda x: x[1], reverse=True)
-    for rank, (pid, elo) in enumerate(sorted_players, 1):
-        if pid == player_id:
-            return rank
-    return len(sorted_players) + 1
+# Use shared rank ceiling date and functions from elo_utils
 
 def get_elo_ceiling(player_id: str, opponent_id: str, current_elos: Dict[str, int]) -> int:
     """
@@ -421,7 +416,7 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
     """Second pass: Calculate ELOs only for matches between ranked players with rank ceiling after Aug 15, 2025"""
     
     # Pre-compute last match dates for inactive players (optimization)
-    inactive_player_dates = get_inactive_player_last_match_dates(players_updated, matches_df, participants_df)
+    inactive_player_dates = get_inactive_player_last_match_dates_from_dataframes(players_updated, matches_df, participants_df)
     
     # Get ranked players (top_ten_played_new >= 3)
     ranked_player_ids = set(players_updated[players_updated['top_ten_played_new'] >= 3]['id'].tolist())
@@ -478,25 +473,20 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
                 match_date = match_date.replace(tzinfo=timezone.utc)
             use_rank_ceiling = match_date >= RANK_CEILING_START_DATE
             
-            if use_rank_ceiling:
-                # Calculate new ELOs with rank ceiling
-                new_elo1, new_elo2 = update_elo_with_ceiling(
-                    elo1, elo2, winner, player1_id, player2_id, current_elos, 
-                    inactive_player_dates, match_date
-                )
-                
-                # Check if ceiling was applied
+            # Use shared batch ELO calculation
+            new_elo1, new_elo2, ceiling_applied_for_match = calculate_elo_update_for_batch(
+                elo1, elo2, winner, player1_id, player2_id, 
+                current_elos, inactive_player_dates, match_date
+            )
+            
+            if ceiling_applied_for_match:
+                ceiling_applied += 1
+                # Get player names for debugging
+                p1_name = players_updated[players_updated['id'] == player1_id]['display_name'].iloc[0]
+                p2_name = players_updated[players_updated['id'] == player2_id]['display_name'].iloc[0]
+                match_date_str = match_date.strftime('%Y-%m-%d')
                 normal_elo1, normal_elo2 = update_elo(elo1, elo2, winner)
-                if new_elo1 != normal_elo1 or new_elo2 != normal_elo2:
-                    ceiling_applied += 1
-                    # Get player names for debugging
-                    p1_name = players_updated[players_updated['id'] == player1_id]['name'].iloc[0]
-                    p2_name = players_updated[players_updated['id'] == player2_id]['name'].iloc[0]
-                    match_date_str = match_date.strftime('%Y-%m-%d')
-                    print(f"    Ceiling applied ({match_date_str}): {p1_name} vs {p2_name} - Normal: ({normal_elo1}, {normal_elo2}) -> Ceiling: ({new_elo1}, {new_elo2})")
-            else:
-                # Calculate new ELOs without ceiling (pre-implementation)
-                new_elo1, new_elo2 = update_elo(elo1, elo2, winner)
+                print(f"    Ceiling applied ({match_date_str}): {p1_name} vs {p2_name} - Normal: ({normal_elo1}, {normal_elo2}) -> Ceiling: ({new_elo1}, {new_elo2})")
             
             # Update ELOs
             current_elos[player1_id] = new_elo1
