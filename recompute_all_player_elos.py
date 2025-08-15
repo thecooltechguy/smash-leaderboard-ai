@@ -202,7 +202,6 @@ def fetch_all_data_pandas() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
             break
             
         all_participants.extend(participants_response.data)
-        print(f"  Fetched {len(participants_response.data)} participants (total so far: {len(all_participants)})")
         
         if len(participants_response.data) < page_size:
             break
@@ -238,21 +237,16 @@ def get_original_top_ten_pandas(players_df: pd.DataFrame) -> set:
     original_top_ten = ranked_players.nlargest(10, 'elo')
     original_top_ten_ids = set(original_top_ten['id'].tolist())
     
-    print(f"Original top 10: {', '.join(original_top_ten['name'].tolist())}")
-    
     return original_top_ten_ids
 
 def calculate_top_ten_played_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFrame, 
                                    players_df: pd.DataFrame, original_top_ten_ids: set) -> pd.DataFrame:
     """First pass: Calculate top_ten_played for all players using pandas"""
-    print("\n=== FIRST PASS: Calculating top_ten_played ===")
     
     # Filter 1v1 matches only
     match_participant_counts = participants_df.groupby('match_id').size()
     valid_matches = match_participant_counts[match_participant_counts == 2].index
     valid_participants = participants_df[participants_df['match_id'].isin(valid_matches)].copy()
-    
-    print(f"Processing {len(valid_matches)} 1v1 matches...")
     
     # Create pairs of players for each match
     match_pairs = []
@@ -286,11 +280,9 @@ def calculate_top_ten_played_pandas(matches_df: pd.DataFrame, participants_df: p
 def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFrame, 
                          players_updated: pd.DataFrame) -> pd.DataFrame:
     """Second pass: Calculate ELOs only for matches between ranked players"""
-    print("\n=== SECOND PASS: Calculating ELOs ===")
     
     # Get ranked players (top_ten_played_new >= 3)
     ranked_player_ids = set(players_updated[players_updated['top_ten_played_new'] >= 3]['id'].tolist())
-    print(f"Found {len(ranked_player_ids)} ranked players")
     
     # Initialize ELOs to 1200 for all players
     current_elos = {player_id: 1200 for player_id in players_updated['id']}
@@ -304,8 +296,6 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
     
     elo_updates = 0
     processed = 0
-    
-    print(f"Processing {len(valid_matches_df)} matches for ELO updates...")
     
     for _, match in valid_matches_df.iterrows():
         match_id = match['id']
@@ -342,11 +332,6 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
             elo_updates += 1
         
         processed += 1
-        
-        if processed % 100 == 0:
-            print(f"  Processed {processed} matches, {elo_updates} ELO updates")
-    
-    print(f"Completed: {processed} matches processed, {elo_updates} ELO updates applied")
     
     # Update players dataframe with final ELOs
     players_final = players_updated.copy()
@@ -388,8 +373,6 @@ def recompute_all_player_elos_old_method():
     matches_response = supabase_client.table("matches").select("*").order("created_at", desc=False).execute()
     matches = matches_response.data
     
-    print(f"Processing {len(matches)} matches with old method...")
-    
     elo_updates = 0
     for match in matches:
         match_id = match['id']
@@ -426,8 +409,6 @@ def recompute_all_player_elos_old_method():
             players[player1_id]['elo'] = new_elo1
             players[player2_id]['elo'] = new_elo2
             elo_updates += 1
-    
-    print(f"Old method: {elo_updates} ELO updates applied")
     
     # Return final results
     results = {}
@@ -468,11 +449,9 @@ def recompute_all_player_elos():
     players_final = calculate_elos_pandas(matches_df, participants_df, players_with_top_ten)
     
     # Step 5: Update database
-    print("\n=== UPDATING DATABASE ===")
     for _, player in players_final.iterrows():
         try:
             update_player_stats_in_db(player['id'], int(player['elo_final']), int(player['top_ten_played_new']))
-            print(f"  Updated {player['name']}: ELO = {int(player['elo_final'])}, top_ten_played = {int(player['top_ten_played_new'])}")
         except Exception as e:
             print(f"  Failed to update {player['name']}: {e}")
     
