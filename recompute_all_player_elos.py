@@ -16,6 +16,8 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from datetime import datetime, timezone
+import pytz
 
 # Load environment variables from .env file
 load_dotenv()
@@ -33,6 +35,45 @@ try:
 except Exception as e:
     print(f"Error: Failed to initialize Supabase client: {e}")
     exit(1)
+
+# Rank ceiling implementation date - only apply ceiling after this date (California time)
+pacific_tz = pytz.timezone('America/Los_Angeles')
+RANK_CEILING_START_DATE = pacific_tz.localize(datetime(2025, 8, 15, 0, 0, 0))
+
+def get_player_ranking(player_id: str, current_elos: Dict[str, int]) -> int:
+    """Get the current ranking of a player based on ELO"""
+    sorted_players = sorted(current_elos.items(), key=lambda x: x[1], reverse=True)
+    for rank, (pid, elo) in enumerate(sorted_players, 1):
+        if pid == player_id:
+            return rank
+    return len(sorted_players) + 1
+
+def get_elo_ceiling(player_id: str, opponent_id: str, current_elos: Dict[str, int]) -> int:
+    """
+    Calculate the ELO ceiling for a player based on rank ceiling rules.
+    
+    Rules:
+    - A player cannot surpass someone ranked higher unless they beat that person
+    - If playing against someone ranked lower, max ELO gain stops 1 point shy of next higher player
+    - If playing against someone ranked higher, can gain full ELO (no ceiling)
+    """
+    player_rank = get_player_ranking(player_id, current_elos)
+    opponent_rank = get_player_ranking(opponent_id, current_elos)
+    
+    # If opponent is ranked higher or equal, no ceiling applies (can gain full ELO)
+    if opponent_rank <= player_rank:
+        return float('inf')
+    
+    # Opponent is ranked lower, so apply ceiling
+    # Find the ELO of the player ranked immediately above the current player
+    sorted_players = sorted(current_elos.items(), key=lambda x: x[1], reverse=True)
+    
+    for rank, (pid, elo) in enumerate(sorted_players, 1):
+        if rank == player_rank - 1:  # Player ranked immediately above
+            return elo - 1  # Ceiling is 1 point below their ELO
+    
+    # If no one is ranked above (player is #1), no ceiling
+    return float('inf')
 
 def update_elo(rating_a: float,
                rating_b: float,
@@ -74,6 +115,64 @@ def update_elo(rating_a: float,
     new_rating_b = rating_b + k * (score_b - expected_b)
 
     # Return as integers
+    return round(new_rating_a), round(new_rating_b)
+
+def update_elo_with_ceiling(rating_a: float,
+                           rating_b: float,
+                           winner: str,
+                           player_a_id: str,
+                           player_b_id: str,
+                           current_elos: Dict[str, int],
+                           k: int = 32) -> tuple[int, int]:
+    """
+    Return the new (rating_a, rating_b) after one game with rank ceiling applied.
+
+    Parameters
+    ----------
+    rating_a : current Elo for Player A
+    rating_b : current Elo for Player B
+    winner   : 'A', 'B', or 'draw'
+    player_a_id : ID of Player A
+    player_b_id : ID of Player B
+    current_elos : Dict of all current player ELOs
+    k        : K-factor (default 32)
+
+    Returns
+    -------
+    tuple[int, int] : New ratings as integers for (Player A, Player B)
+    """
+    # Calculate normal ELO update first
+    new_rating_a, new_rating_b = update_elo(rating_a, rating_b, winner, k)
+    
+    # Apply ceiling for Player A if they gained ELO
+    if new_rating_a > rating_a:
+        ceiling_a = get_elo_ceiling(player_a_id, player_b_id, current_elos)
+        if new_rating_a > ceiling_a:
+            new_rating_a = ceiling_a
+            # Adjust Player B's rating accordingly to maintain zero-sum property
+            actual_gain_a = new_rating_a - rating_a
+            expected_gain_a = (new_rating_a - rating_a) if ceiling_a == float('inf') else actual_gain_a
+            
+            # Calculate what B's rating should be to maintain zero-sum
+            if winner.upper() == 'A':
+                # If A won but hit ceiling, B loses less
+                rating_loss_b = actual_gain_a
+                new_rating_b = rating_b - rating_loss_b
+    
+    # Apply ceiling for Player B if they gained ELO
+    if new_rating_b > rating_b:
+        ceiling_b = get_elo_ceiling(player_b_id, player_a_id, current_elos)
+        if new_rating_b > ceiling_b:
+            new_rating_b = ceiling_b
+            # Adjust Player A's rating accordingly to maintain zero-sum property
+            actual_gain_b = new_rating_b - rating_b
+            
+            # Calculate what A's rating should be to maintain zero-sum
+            if winner.upper() == 'B':
+                # If B won but hit ceiling, A loses less
+                rating_loss_a = actual_gain_b
+                new_rating_a = rating_a - rating_loss_a
+    
     return round(new_rating_a), round(new_rating_b)
 
 def get_all_players() -> tuple[Dict[str, Dict], set]:
@@ -279,7 +378,7 @@ def calculate_top_ten_played_pandas(matches_df: pd.DataFrame, participants_df: p
 
 def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFrame, 
                          players_updated: pd.DataFrame) -> pd.DataFrame:
-    """Second pass: Calculate ELOs only for matches between ranked players"""
+    """Second pass: Calculate ELOs only for matches between ranked players with rank ceiling after Aug 15, 2025"""
     
     # Get ranked players (top_ten_played_new >= 3)
     ranked_player_ids = set(players_updated[players_updated['top_ten_played_new'] >= 3]['id'].tolist())
@@ -295,6 +394,7 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
     valid_matches_df = matches_df[matches_df['id'].isin(valid_matches)].sort_values('created_at')
     
     elo_updates = 0
+    ceiling_applied = 0
     processed = 0
     
     for _, match in valid_matches_df.iterrows():
@@ -322,8 +422,34 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
             elo1 = current_elos[player1_id]
             elo2 = current_elos[player2_id]
             
-            # Calculate new ELOs
-            new_elo1, new_elo2 = update_elo(elo1, elo2, winner)
+            # Check if match is after rank ceiling implementation date
+            match_date_str = match['created_at']
+            if match_date_str.endswith('Z'):
+                match_date_str = match_date_str.replace('Z', '+00:00')
+            elif '+' not in match_date_str and not match_date_str.endswith('+00:00'):
+                match_date_str += '+00:00'
+            
+            match_date = datetime.fromisoformat(match_date_str)
+            use_rank_ceiling = match_date >= RANK_CEILING_START_DATE
+            
+            if use_rank_ceiling:
+                # Calculate new ELOs with rank ceiling
+                new_elo1, new_elo2 = update_elo_with_ceiling(
+                    elo1, elo2, winner, player1_id, player2_id, current_elos
+                )
+                
+                # Check if ceiling was applied
+                normal_elo1, normal_elo2 = update_elo(elo1, elo2, winner)
+                if new_elo1 != normal_elo1 or new_elo2 != normal_elo2:
+                    ceiling_applied += 1
+                    # Get player names for debugging
+                    p1_name = players_updated[players_updated['id'] == player1_id]['name'].iloc[0]
+                    p2_name = players_updated[players_updated['id'] == player2_id]['name'].iloc[0]
+                    match_date_str = match_date.strftime('%Y-%m-%d')
+                    print(f"    Ceiling applied ({match_date_str}): {p1_name} vs {p2_name} - Normal: ({normal_elo1}, {normal_elo2}) -> Ceiling: ({new_elo1}, {new_elo2})")
+            else:
+                # Calculate new ELOs without ceiling (pre-implementation)
+                new_elo1, new_elo2 = update_elo(elo1, elo2, winner)
             
             # Update ELOs
             current_elos[player1_id] = new_elo1
@@ -332,6 +458,8 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
             elo_updates += 1
         
         processed += 1
+    
+    print(f"    Processed {processed} matches, {elo_updates} ELO updates, {ceiling_applied} ceiling applications (post Aug 15, 2025)")
     
     # Update players dataframe with final ELOs
     players_final = players_updated.copy()
@@ -421,12 +549,75 @@ def recompute_all_player_elos_old_method():
     
     return results
 
-def recompute_all_player_elos():
-    """Main function to recompute all player ELO ratings using pandas"""
+def calculate_elos_pandas_no_ceiling(matches_df: pd.DataFrame, participants_df: pd.DataFrame, 
+                                    players_updated: pd.DataFrame) -> pd.DataFrame:
+    """Calculate ELOs without rank ceiling for comparison"""
     
-    print("="*60)
-    print("RECOMPUTING ALL PLAYER ELO RATINGS (PANDAS VERSION)")
-    print("="*60)
+    # Get ranked players (top_ten_played_new >= 3)
+    ranked_player_ids = set(players_updated[players_updated['top_ten_played_new'] >= 3]['id'].tolist())
+    
+    # Initialize ELOs to 1200 for all players
+    current_elos = {player_id: 1200 for player_id in players_updated['id']}
+    
+    # Filter 1v1 matches only
+    match_participant_counts = participants_df.groupby('match_id').size()
+    valid_matches = match_participant_counts[match_participant_counts == 2].index
+    
+    # Sort matches chronologically
+    valid_matches_df = matches_df[matches_df['id'].isin(valid_matches)].sort_values('created_at')
+    
+    elo_updates = 0
+    processed = 0
+    
+    for _, match in valid_matches_df.iterrows():
+        match_id = match['id']
+        match_participants = participants_df[participants_df['match_id'] == match_id]
+        
+        if len(match_participants) != 2:
+            continue
+            
+        players = match_participants['player'].tolist()
+        winners = match_participants[match_participants['has_won'] == True]['player'].tolist()
+        
+        if len(winners) != 1:  # Skip if no clear winner
+            processed += 1
+            continue
+            
+        player1_id, player2_id = players[0], players[1]
+        
+        # Only calculate ELO if both players are ranked
+        if player1_id in ranked_player_ids and player2_id in ranked_player_ids:
+            winner_id = winners[0]
+            winner = 'A' if winner_id == player1_id else 'B'
+            
+            # Get current ELOs
+            elo1 = current_elos[player1_id]
+            elo2 = current_elos[player2_id]
+            
+            # Calculate new ELOs without ceiling
+            new_elo1, new_elo2 = update_elo(elo1, elo2, winner)
+            
+            # Update ELOs
+            current_elos[player1_id] = new_elo1
+            current_elos[player2_id] = new_elo2
+            
+            elo_updates += 1
+        
+        processed += 1
+    
+    # Update players dataframe with final ELOs
+    players_final = players_updated.copy()
+    players_final['elo_final'] = players_final['id'].map(current_elos)
+    
+    return players_final
+
+def recompute_all_player_elos():
+    """Main function to recompute all player ELO ratings using pandas with rank ceiling after Aug 15, 2025"""
+    
+    print("="*70)
+    print("RECOMPUTING ALL PLAYER ELO RATINGS")
+    print("(Rank ceiling applied only after August 15, 2025)")
+    print("="*70)
     
     # Step 1: Fetch all data
     players_df, matches_df, participants_df = fetch_all_data_pandas()
@@ -445,37 +636,53 @@ def recompute_all_player_elos():
     # Step 3: First pass - Calculate top_ten_played for all players
     players_with_top_ten = calculate_top_ten_played_pandas(matches_df, participants_df, players_df, original_top_ten_ids)
     
-    # Step 4: Second pass - Calculate ELOs only for ranked players
-    players_final = calculate_elos_pandas(matches_df, participants_df, players_with_top_ten)
+    # Step 4: Second pass - Calculate ELOs with rank ceiling
+    print("\nCalculating ELOs with rank ceiling...")
+    players_final_ceiling = calculate_elos_pandas(matches_df, participants_df, players_with_top_ten)
     
-    # Step 5: Update database
-    for _, player in players_final.iterrows():
+    # Step 5: Calculate ELOs without ceiling for comparison
+    print("\nCalculating ELOs without rank ceiling for comparison...")
+    players_final_no_ceiling = calculate_elos_pandas_no_ceiling(matches_df, participants_df, players_with_top_ten)
+    
+    # Step 6: Update database with ceiling-applied ELOs
+    print("\nUpdating database with rank ceiling ELOs...")
+    for _, player in players_final_ceiling.iterrows():
         try:
             update_player_stats_in_db(player['id'], int(player['elo_final']), int(player['top_ten_played_new']))
         except Exception as e:
             print(f"  Failed to update {player['name']}: {e}")
     
-    # Step 6: Print final rankings
+    # Step 7: Print comparison of rankings
+    print("\n" + "="*80)
+    print("RANK CEILING COMPARISON")
+    print("="*80)
+    
+    # Sort both by final ELO
+    final_rankings_ceiling = players_final_ceiling.sort_values('elo_final', ascending=False)
+    
+    # Create ranking comparison
+    print(f"{'Rank':<4} {'Player':<20} {'With Ceiling':<12} {'Without Ceiling':<15} {'Difference':<10}")
+    print("-" * 80)
+    
+    for rank, (_, player_ceiling) in enumerate(final_rankings_ceiling.iterrows(), 1):
+        player_id = player_ceiling['id']
+        player_no_ceiling = players_final_no_ceiling[players_final_no_ceiling['id'] == player_id].iloc[0]
+        
+        elo_ceiling = int(player_ceiling['elo_final'])
+        elo_no_ceiling = int(player_no_ceiling['elo_final'])
+        difference = elo_ceiling - elo_no_ceiling
+        
+        print(f"{rank:<4} {player_ceiling['display_name']:<20} {elo_ceiling:<12} {elo_no_ceiling:<15} {difference:+d}")
+    
     print("\n" + "="*60)
-    print("FINAL ELO RANKINGS (PANDAS METHOD)")
+    print("FINAL ELO RANKINGS (WITH RANK CEILING)")
     print("="*60)
     
-    # Sort by final ELO
-    final_rankings = players_final.sort_values('elo_final', ascending=False)
-    
-    for rank, (_, player) in enumerate(final_rankings.iterrows(), 1):
+    for rank, (_, player) in enumerate(final_rankings_ceiling.iterrows(), 1):
         print(f"{rank:2d}. {player['display_name']:<20} - {int(player['elo_final']):4d} ELO (top_ten_played: {int(player['top_ten_played_new'])})")
     
-    print("\n" + "="*60)
-    print("PANDAS METHOD FINAL ELOS (for comparison):")
     print("="*60)
-    
-    # Print in a format easy to compare with old method
-    for _, player in final_rankings.iterrows():
-        print(f"PANDAS: {player['name']} = ELO:{int(player['elo_final'])}, top_ten_played:{int(player['top_ten_played_new'])}")
-    
-    print("="*60)
-    print("ELO RECOMPUTATION COMPLETE!")
+    print("ELO RECOMPUTATION WITH RANK CEILING COMPLETE!")
     print("="*60)
 
 if __name__ == "__main__":
