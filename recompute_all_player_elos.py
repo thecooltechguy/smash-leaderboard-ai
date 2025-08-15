@@ -11,7 +11,9 @@ This script:
 
 import math
 import os
-from typing import Dict, List, Optional
+import pandas as pd
+import numpy as np
+from typing import Dict, List, Optional, Tuple
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -173,160 +175,325 @@ def update_player_stats_in_db(player_id: str, elo: int, top_ten_played: int):
     except Exception as e:
         print(f"Error updating stats for player {player_id}: {e}")
 
-def recompute_all_player_elos():
-    """Main function to recompute all player ELO ratings"""
+def fetch_all_data_pandas() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Fetch all data and return as pandas DataFrames"""
+    print("Fetching all data...")
     
+    # Fetch players
+    players_response = supabase_client.table("players").select("*").execute()
+    players_df = pd.DataFrame(players_response.data)
+    
+    # Fetch matches
+    matches_response = supabase_client.table("matches").select("*").order("created_at", desc=False).execute()
+    matches_df = pd.DataFrame(matches_response.data)
+    
+    # Fetch all match participants with pagination
+    all_participants = []
+    page_size = 1000
+    start = 0
+    
+    while True:
+        participants_response = (supabase_client.table("match_participants")
+                               .select("*")
+                               .range(start, start + page_size - 1)
+                               .execute())
+        
+        if not participants_response.data:
+            break
+            
+        all_participants.extend(participants_response.data)
+        print(f"  Fetched {len(participants_response.data)} participants (total so far: {len(all_participants)})")
+        
+        if len(participants_response.data) < page_size:
+            break
+            
+        start += page_size
+    
+    participants_df = pd.DataFrame(all_participants)
+    
+    print(f"Loaded {len(players_df)} players, {len(matches_df)} matches, {len(participants_df)} participants")
+    
+    return players_df, matches_df, participants_df
+
+def get_match_participants(match_id: int) -> List[Dict]:
+    """Get all participants for a specific match (old method)"""
+    try:
+        response = (
+            supabase_client.table("match_participants")
+            .select("*")
+            .eq("match_id", match_id)
+            .execute()
+        )
+        return response.data
+    except Exception as e:
+        print(f"Error fetching participants for match {match_id}: {e}")
+        return []
+
+def get_original_top_ten_pandas(players_df: pd.DataFrame) -> set:
+    """Get original top 10 player IDs based on database ELOs"""
+    # Filter ranked players (top_ten_played >= 3)
+    ranked_players = players_df[players_df['top_ten_played'] >= 3].copy()
+    
+    # Sort by ELO and take top 10
+    original_top_ten = ranked_players.nlargest(10, 'elo')
+    original_top_ten_ids = set(original_top_ten['id'].tolist())
+    
+    print(f"Original top 10: {', '.join(original_top_ten['name'].tolist())}")
+    
+    return original_top_ten_ids
+
+def calculate_top_ten_played_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFrame, 
+                                   players_df: pd.DataFrame, original_top_ten_ids: set) -> pd.DataFrame:
+    """First pass: Calculate top_ten_played for all players using pandas"""
+    print("\n=== FIRST PASS: Calculating top_ten_played ===")
+    
+    # Filter 1v1 matches only
+    match_participant_counts = participants_df.groupby('match_id').size()
+    valid_matches = match_participant_counts[match_participant_counts == 2].index
+    valid_participants = participants_df[participants_df['match_id'].isin(valid_matches)].copy()
+    
+    print(f"Processing {len(valid_matches)} 1v1 matches...")
+    
+    # Create pairs of players for each match
+    match_pairs = []
+    for match_id in valid_matches:
+        match_participants = valid_participants[valid_participants['match_id'] == match_id]
+        if len(match_participants) == 2:
+            players = match_participants['player'].tolist()
+            match_pairs.extend([
+                {'player': players[0], 'opponent': players[1], 'match_id': match_id},
+                {'player': players[1], 'opponent': players[0], 'match_id': match_id}
+            ])
+    
+    pairs_df = pd.DataFrame(match_pairs)
+    
+    # Filter pairs where opponent is in original top 10
+    pairs_df['opponent_is_top_ten'] = pairs_df['opponent'].isin(original_top_ten_ids)
+    top_ten_faced = pairs_df[pairs_df['opponent_is_top_ten']].copy()
+    
+    # Count unique top 10 players each player has faced
+    top_ten_counts = (top_ten_faced.groupby('player')['opponent']
+                     .nunique()
+                     .reset_index()
+                     .rename(columns={'opponent': 'top_ten_played_new'}))
+    
+    # Merge with players dataframe
+    players_updated = players_df.merge(top_ten_counts, left_on='id', right_on='player', how='left')
+    players_updated['top_ten_played_new'] = players_updated['top_ten_played_new'].fillna(0).astype(int)
+    
+    return players_updated
+
+def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFrame, 
+                         players_updated: pd.DataFrame) -> pd.DataFrame:
+    """Second pass: Calculate ELOs only for matches between ranked players"""
+    print("\n=== SECOND PASS: Calculating ELOs ===")
+    
+    # Get ranked players (top_ten_played_new >= 3)
+    ranked_player_ids = set(players_updated[players_updated['top_ten_played_new'] >= 3]['id'].tolist())
+    print(f"Found {len(ranked_player_ids)} ranked players")
+    
+    # Initialize ELOs to 1200 for all players
+    current_elos = {player_id: 1200 for player_id in players_updated['id']}
+    
+    # Filter 1v1 matches only
+    match_participant_counts = participants_df.groupby('match_id').size()
+    valid_matches = match_participant_counts[match_participant_counts == 2].index
+    
+    # Sort matches chronologically
+    valid_matches_df = matches_df[matches_df['id'].isin(valid_matches)].sort_values('created_at')
+    
+    elo_updates = 0
+    processed = 0
+    
+    print(f"Processing {len(valid_matches_df)} matches for ELO updates...")
+    
+    for _, match in valid_matches_df.iterrows():
+        match_id = match['id']
+        match_participants = participants_df[participants_df['match_id'] == match_id]
+        
+        if len(match_participants) != 2:
+            continue
+            
+        players = match_participants['player'].tolist()
+        winners = match_participants[match_participants['has_won'] == True]['player'].tolist()
+        
+        if len(winners) != 1:  # Skip if no clear winner
+            processed += 1
+            continue
+            
+        player1_id, player2_id = players[0], players[1]
+        
+        # Only calculate ELO if both players are ranked
+        if player1_id in ranked_player_ids and player2_id in ranked_player_ids:
+            winner_id = winners[0]
+            winner = 'A' if winner_id == player1_id else 'B'
+            
+            # Get current ELOs
+            elo1 = current_elos[player1_id]
+            elo2 = current_elos[player2_id]
+            
+            # Calculate new ELOs
+            new_elo1, new_elo2 = update_elo(elo1, elo2, winner)
+            
+            # Update ELOs
+            current_elos[player1_id] = new_elo1
+            current_elos[player2_id] = new_elo2
+            
+            elo_updates += 1
+        
+        processed += 1
+        
+        if processed % 100 == 0:
+            print(f"  Processed {processed} matches, {elo_updates} ELO updates")
+    
+    print(f"Completed: {processed} matches processed, {elo_updates} ELO updates applied")
+    
+    # Update players dataframe with final ELOs
+    players_final = players_updated.copy()
+    players_final['elo_final'] = players_final['id'].map(current_elos)
+    
+    return players_final
+
+def recompute_all_player_elos_old_method():
+    """Old sequential method for comparison"""
     print("="*60)
-    print("RECOMPUTING ALL PLAYER ELO RATINGS")
+    print("RECOMPUTING ALL PLAYER ELO RATINGS (OLD METHOD)")
     print("="*60)
     
-    # Step 1: Get all players and reset their ELOs to 1200, get original top 10
-    print("\n1. Loading players and resetting ELOs to 1200...")
-    players, original_top_ten_ids = get_all_players()
+    # Get all players and original top 10 (using old method)
+    players_response = supabase_client.table("players").select("*").execute()
+    players = {}
+    original_players_with_ranking = []
     
-    if not players:
-        print("No players found in database!")
-        return
+    for player in players_response.data:
+        players[player['id']] = {
+            'id': player['id'],
+            'name': player['name'],
+            'elo': 1200,  # Reset to initial ELO
+            'top_ten_played': player.get('top_ten_played', 0),
+            'top_ten_faced_set': set()
+        }
+        original_players_with_ranking.append({
+            'id': player['id'],
+            'elo': player.get('elo', 1200),
+            'top_ten_played': player.get('top_ten_played', 0)
+        })
     
-    print(f"Original top 10 players (before recomputation): {len(original_top_ten_ids)} players")
+    # Get original top 10
+    ranked_players = [p for p in original_players_with_ranking if p['top_ten_played'] >= 3]
+    original_top_ten = sorted(ranked_players, key=lambda p: p['elo'], reverse=True)[:10]
+    original_top_ten_ids = {player['id'] for player in original_top_ten}
     
-    # Debug: Print the original top 10 player names
-    original_top_ten_names = []
-    for player_id in original_top_ten_ids:
-        if player_id in players:
-            original_top_ten_names.append(players[player_id]['name'])
-    print(f"Original top 10: {', '.join(original_top_ten_names)}")
+    # Get matches
+    matches_response = supabase_client.table("matches").select("*").order("created_at", desc=False).execute()
+    matches = matches_response.data
     
-    print(f"Found {len(players)} players:")
-    for player in players.values():
-        print(f"  - {player['name']} (ID: {player['id']}) -> ELO: {player['elo']}")
+    print(f"Processing {len(matches)} matches with old method...")
     
-    # Step 2: Get all matches in chronological order
-    print("\n2. Loading matches in chronological order...")
-    matches = get_all_matches_chronological()
-    
-    if not matches:
-        print("No matches found in database!")
-        return
-    
-    print(f"Found {len(matches)} matches to process")
-    
-    # Step 3: Process each match and update ELOs
-    print("\n3. Processing matches and updating ELOs...")
-    processed_matches = 0
-    elo_updated_matches = 0
-    
+    elo_updates = 0
     for match in matches:
         match_id = match['id']
-        created_at = match.get('created_at', 'Unknown')
-        
-        # Get participants for this match
         participants = get_match_participants(match_id)
         
         if len(participants) != 2:
-            print(f"  Match {match_id} ({created_at}): Skipping (not 1v1, has {len(participants)} participants)")
-            processed_matches += 1
             continue
+            
+        # Get players and winner
+        player1, player2 = participants[0], participants[1]
+        player1_id, player2_id = player1['player'], player2['player']
         
-        # Check if both participants are valid players and one has won
-        player1 = None
-        player2 = None
-        winner_participant = None
-        
-        for participant in participants:
-            player_id = participant['player']
-            if player_id in players:
-                if player1 is None:
-                    player1 = participant
-                else:
-                    player2 = participant
-                
-                if participant['has_won']:
-                    winner_participant = participant
-        
-        if not player1 or not player2:
-            print(f"  Match {match_id} ({created_at}): Skipping (missing players)")
-            processed_matches += 1
+        if player1_id not in players or player2_id not in players:
             continue
-        
+            
+        winner_participant = next((p for p in participants if p['has_won']), None)
         if not winner_participant:
-            print(f"  Match {match_id} ({created_at}): Skipping (no winner - no contest)")
-            processed_matches += 1
             continue
+            
+        # Update top_ten_played (always)
+        if player2_id in original_top_ten_ids:
+            players[player1_id]['top_ten_faced_set'].add(player2_id)
+        if player1_id in original_top_ten_ids:
+            players[player2_id]['top_ten_faced_set'].add(player1_id)
+            
+        # Check if both ranked for ELO update
+        player1_ranked = players[player1_id]['top_ten_played'] >= 3
+        player2_ranked = players[player2_id]['top_ten_played'] >= 3
         
-        # Check if both players are ranked (top_ten_played >= 3)
-        player1_id = player1['player']
-        player2_id = player2['player']
-        player1_ranked = is_player_ranked(players[player1_id])
-        player2_ranked = is_player_ranked(players[player2_id])
-        
-        # Always update top_ten_played counters regardless of ranking status
-        update_top_ten_played(player1_id, player2_id, players, original_top_ten_ids)
-        
-        if not (player1_ranked and player2_ranked):
-            unranked_players = []
-            if not player1_ranked:
-                unranked_players.append(players[player1_id]['name'])
-            if not player2_ranked:
-                unranked_players.append(players[player2_id]['name'])
-            print(f"  Match {match_id} ({created_at}): Skipping ELO update (unranked player(s): {', '.join(unranked_players)})")
-            processed_matches += 1
-            continue
-        
-        # Get current ELOs
-        player1_name = players[player1_id]['name']
-        player2_name = players[player2_id]['name']
-        player1_current_elo = players[player1_id]['elo']
-        player2_current_elo = players[player2_id]['elo']
-        
-        # Determine winner ('A' for player1, 'B' for player2)
-        winner = 'A' if player1['has_won'] else 'B'
-        winner_name = player1_name if winner == 'A' else player2_name
-        
-        # Calculate new ELOs
-        new_elo_1, new_elo_2 = update_elo(player1_current_elo, player2_current_elo, winner)
-        
-        # Update ELOs in memory
-        players[player1_id]['elo'] = new_elo_1
-        players[player2_id]['elo'] = new_elo_2
-        
-        # Calculate changes
-        elo_change_1 = new_elo_1 - player1_current_elo
-        elo_change_2 = new_elo_2 - player2_current_elo
-        
-        print(f"  Match {match_id} ({created_at}): {winner_name} wins!")
-        print(f"    {player1_name}: {player1_current_elo} → {new_elo_1} ({elo_change_1:+d})")
-        print(f"    {player2_name}: {player2_current_elo} → {new_elo_2} ({elo_change_2:+d})")
-        
-        processed_matches += 1
-        elo_updated_matches += 1
+        if player1_ranked and player2_ranked:
+            winner = 'A' if player1['has_won'] else 'B'
+            elo1, elo2 = players[player1_id]['elo'], players[player2_id]['elo']
+            new_elo1, new_elo2 = update_elo(elo1, elo2, winner)
+            players[player1_id]['elo'] = new_elo1
+            players[player2_id]['elo'] = new_elo2
+            elo_updates += 1
     
-    print(f"\n4. Match processing complete:")
-    print(f"   Total matches processed: {processed_matches}")
-    print(f"   ELO updates applied: {elo_updated_matches}")
+    print(f"Old method: {elo_updates} ELO updates applied")
     
-    # Step 4: Update all players' ELOs and top_ten_played in the database
-    print("\n5. Updating final ELO ratings and top_ten_played in database...")
-    
+    # Return final results
+    results = {}
     for player in players.values():
+        results[player['id']] = {
+            'name': player['name'],
+            'elo': player['elo'],
+            'top_ten_played': len(player['top_ten_faced_set'])
+        }
+    
+    return results
+
+def recompute_all_player_elos():
+    """Main function to recompute all player ELO ratings using pandas"""
+    
+    print("="*60)
+    print("RECOMPUTING ALL PLAYER ELO RATINGS (PANDAS VERSION)")
+    print("="*60)
+    
+    # Step 1: Fetch all data
+    players_df, matches_df, participants_df = fetch_all_data_pandas()
+    
+    if len(players_df) == 0:
+        print("No players found in database!")
+        return
+    
+    # Step 2: Get original top 10 based on current database state
+    original_top_ten_ids = get_original_top_ten_pandas(players_df)
+    
+    if len(original_top_ten_ids) == 0:
+        print("No ranked players found in database!")
+        return
+    
+    # Step 3: First pass - Calculate top_ten_played for all players
+    players_with_top_ten = calculate_top_ten_played_pandas(matches_df, participants_df, players_df, original_top_ten_ids)
+    
+    # Step 4: Second pass - Calculate ELOs only for ranked players
+    players_final = calculate_elos_pandas(matches_df, participants_df, players_with_top_ten)
+    
+    # Step 5: Update database
+    print("\n=== UPDATING DATABASE ===")
+    for _, player in players_final.iterrows():
         try:
-            # Calculate final top_ten_played count from the set of unique players faced
-            final_top_ten_played = len(player['top_ten_faced_set'])
-            update_player_stats_in_db(player['id'], player['elo'], final_top_ten_played)
-            print(f"  Updated {player['name']}: ELO = {player['elo']}, top_ten_played = {final_top_ten_played}")
+            update_player_stats_in_db(player['id'], int(player['elo_final']), int(player['top_ten_played_new']))
+            print(f"  Updated {player['name']}: ELO = {int(player['elo_final'])}, top_ten_played = {int(player['top_ten_played_new'])}")
         except Exception as e:
             print(f"  Failed to update {player['name']}: {e}")
     
-    # Step 5: Print final rankings
+    # Step 6: Print final rankings
     print("\n" + "="*60)
-    print("FINAL ELO RANKINGS")
+    print("FINAL ELO RANKINGS (PANDAS METHOD)")
     print("="*60)
     
-    # Sort players by ELO (highest first)
-    sorted_players = sorted(players.values(), key=lambda p: p['elo'], reverse=True)
+    # Sort by final ELO
+    final_rankings = players_final.sort_values('elo_final', ascending=False)
     
-    for rank, player in enumerate(sorted_players, 1):
-        print(f"{rank:2d}. {player['name']:<20} - {player['elo']:4d} ELO")
+    for rank, (_, player) in enumerate(final_rankings.iterrows(), 1):
+        print(f"{rank:2d}. {player['name']:<20} - {int(player['elo_final']):4d} ELO (top_ten_played: {int(player['top_ten_played_new'])})")
+    
+    print("\n" + "="*60)
+    print("PANDAS METHOD FINAL ELOS (for comparison):")
+    print("="*60)
+    
+    # Print in a format easy to compare with old method
+    for _, player in final_rankings.iterrows():
+        print(f"PANDAS: {player['name']} = ELO:{int(player['elo_final'])}, top_ten_played:{int(player['top_ten_played_new'])}")
     
     print("="*60)
     print("ELO RECOMPUTATION COMPLETE!")
