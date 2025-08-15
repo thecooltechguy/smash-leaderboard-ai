@@ -74,21 +74,59 @@ def update_elo(rating_a: float,
     # Return as integers
     return round(new_rating_a), round(new_rating_b)
 
-def get_all_players() -> Dict[str, Dict]:
-    """Get all players from the database"""
+def get_all_players() -> tuple[Dict[str, Dict], set]:
+    """Get all players from the database and return original top 10"""
     try:
         response = supabase_client.table("players").select("*").execute()
         players = {}
+        
+        # First, build the full player data and collect original data
+        original_players_with_ranking = []
         for player in response.data:
             players[player['id']] = {
                 'id': player['id'],
                 'name': player['name'],
-                'elo': 1200  # Reset to initial ELO
+                'elo': 1200,  # Reset to initial ELO
+                'top_ten_played': player.get('top_ten_played', 0),  # Original value for ranking check
+                'top_ten_faced_set': set()  # Track unique top 10 players faced
             }
-        return players
+            original_players_with_ranking.append({
+                'id': player['id'],
+                'elo': player.get('elo', 1200),  # Original ELO from database
+                'top_ten_played': player.get('top_ten_played', 0)  # Original ranking status
+            })
+        
+        # Get original top 10: first filter by ranked players (top_ten_played >= 3), then sort by ELO
+        ranked_players = [p for p in original_players_with_ranking if p['top_ten_played'] >= 3]
+        original_top_ten = sorted(ranked_players, key=lambda p: p['elo'], reverse=True)[:10]
+        original_top_ten_ids = {player['id'] for player in original_top_ten}
+        
+        return players, original_top_ten_ids
     except Exception as e:
         print(f"Error fetching players: {e}")
-        return {}
+        return {}, set()
+
+def is_player_ranked(player_data: Dict) -> bool:
+    """Check if a player is ranked (has top_ten_played >= 3)"""
+    return player_data.get('top_ten_played', 0) >= 3
+
+def get_current_top_ten_player_ids(players: Dict[str, Dict]) -> set:
+    """Get the IDs of the current top 10 players by ELO"""
+    sorted_players = sorted(players.values(), key=lambda p: p['elo'], reverse=True)
+    return {player['id'] for player in sorted_players[:10]}
+
+def update_top_ten_played(player1_id: str, player2_id: str, players: Dict[str, Dict], original_top_ten_ids: set):
+    """Update top_ten_faced_set if a player faces someone from the original top 10"""
+    
+    # If player1 faces someone from original top 10, add them to player1's set
+    if player2_id in original_top_ten_ids:
+        players[player1_id]['top_ten_faced_set'].add(player2_id)
+        print(f"    DEBUG: {players[player1_id]['name']} faced top 10 player {players[player2_id]['name']}")
+    
+    # If player2 faces someone from original top 10, add them to player2's set
+    if player1_id in original_top_ten_ids:
+        players[player2_id]['top_ten_faced_set'].add(player1_id)
+        print(f"    DEBUG: {players[player2_id]['name']} faced top 10 player {players[player1_id]['name']}")
 
 def get_all_matches_chronological() -> List[Dict]:
     """Get all matches ordered by created_at"""
@@ -125,6 +163,16 @@ def update_player_elo_in_db(player_id: str, elo: int):
     except Exception as e:
         print(f"Error updating ELO for player {player_id}: {e}")
 
+def update_player_stats_in_db(player_id: str, elo: int, top_ten_played: int):
+    """Update a player's ELO and top_ten_played in the database"""
+    try:
+        supabase_client.table("players").update({
+            "elo": elo,
+            "top_ten_played": top_ten_played
+        }).eq("id", player_id).execute()
+    except Exception as e:
+        print(f"Error updating stats for player {player_id}: {e}")
+
 def recompute_all_player_elos():
     """Main function to recompute all player ELO ratings"""
     
@@ -132,13 +180,22 @@ def recompute_all_player_elos():
     print("RECOMPUTING ALL PLAYER ELO RATINGS")
     print("="*60)
     
-    # Step 1: Get all players and reset their ELOs to 1200
+    # Step 1: Get all players and reset their ELOs to 1200, get original top 10
     print("\n1. Loading players and resetting ELOs to 1200...")
-    players = get_all_players()
+    players, original_top_ten_ids = get_all_players()
     
     if not players:
         print("No players found in database!")
         return
+    
+    print(f"Original top 10 players (before recomputation): {len(original_top_ten_ids)} players")
+    
+    # Debug: Print the original top 10 player names
+    original_top_ten_names = []
+    for player_id in original_top_ten_ids:
+        if player_id in players:
+            original_top_ten_names.append(players[player_id]['name'])
+    print(f"Original top 10: {', '.join(original_top_ten_names)}")
     
     print(f"Found {len(players)} players:")
     for player in players.values():
@@ -159,7 +216,7 @@ def recompute_all_player_elos():
     processed_matches = 0
     elo_updated_matches = 0
     
-    for i, match in enumerate(matches, 1):
+    for match in matches:
         match_id = match['id']
         created_at = match.get('created_at', 'Unknown')
         
@@ -197,9 +254,26 @@ def recompute_all_player_elos():
             processed_matches += 1
             continue
         
-        # Get current ELOs
+        # Check if both players are ranked (top_ten_played >= 3)
         player1_id = player1['player']
         player2_id = player2['player']
+        player1_ranked = is_player_ranked(players[player1_id])
+        player2_ranked = is_player_ranked(players[player2_id])
+        
+        # Always update top_ten_played counters regardless of ranking status
+        update_top_ten_played(player1_id, player2_id, players, original_top_ten_ids)
+        
+        if not (player1_ranked and player2_ranked):
+            unranked_players = []
+            if not player1_ranked:
+                unranked_players.append(players[player1_id]['name'])
+            if not player2_ranked:
+                unranked_players.append(players[player2_id]['name'])
+            print(f"  Match {match_id} ({created_at}): Skipping ELO update (unranked player(s): {', '.join(unranked_players)})")
+            processed_matches += 1
+            continue
+        
+        # Get current ELOs
         player1_name = players[player1_id]['name']
         player2_name = players[player2_id]['name']
         player1_current_elo = players[player1_id]['elo']
@@ -231,13 +305,15 @@ def recompute_all_player_elos():
     print(f"   Total matches processed: {processed_matches}")
     print(f"   ELO updates applied: {elo_updated_matches}")
     
-    # Step 4: Update all players' ELOs in the database
-    print("\n5. Updating final ELO ratings in database...")
+    # Step 4: Update all players' ELOs and top_ten_played in the database
+    print("\n5. Updating final ELO ratings and top_ten_played in database...")
     
     for player in players.values():
         try:
-            update_player_elo_in_db(player['id'], player['elo'])
-            print(f"  Updated {player['name']}: ELO = {player['elo']}")
+            # Calculate final top_ten_played count from the set of unique players faced
+            final_top_ten_played = len(player['top_ten_faced_set'])
+            update_player_stats_in_db(player['id'], player['elo'], final_top_ten_played)
+            print(f"  Updated {player['name']}: ELO = {player['elo']}, top_ten_played = {final_top_ten_played}")
         except Exception as e:
             print(f"  Failed to update {player['name']}: {e}")
     
