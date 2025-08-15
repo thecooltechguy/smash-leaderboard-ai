@@ -123,9 +123,12 @@ def update_elo_with_ceiling(rating_a: float,
                            player_a_id: str,
                            player_b_id: str,
                            current_elos: Dict[str, int],
+                           inactive_player_dates: Dict[str, datetime],
+                           match_date: datetime,
                            k: int = 32) -> tuple[int, int]:
     """
     Return the new (rating_a, rating_b) after one game with rank ceiling applied.
+    Excludes players who became inactive before this match date.
 
     Parameters
     ----------
@@ -135,23 +138,37 @@ def update_elo_with_ceiling(rating_a: float,
     player_a_id : ID of Player A
     player_b_id : ID of Player B
     current_elos : Dict of all current player ELOs
+    inactive_player_dates : Dict mapping inactive player IDs to their last match dates
+    match_date : Date of the current match being processed
     k        : K-factor (default 32)
 
     Returns
     -------
     tuple[int, int] : New ratings as integers for (Player A, Player B)
     """
+    # Create active_elos dict excluding players who were inactive before this match
+    active_elos = {}
+    for player_id, elo in current_elos.items():
+        if player_id in inactive_player_dates:
+            # This player is marked inactive - check if they were inactive before this match
+            last_match_date = inactive_player_dates[player_id]
+            if last_match_date >= match_date:
+                # Player was still active at this match date
+                active_elos[player_id] = elo
+        else:
+            # Player is not marked inactive
+            active_elos[player_id] = elo
+    
     # Calculate normal ELO update first
     new_rating_a, new_rating_b = update_elo(rating_a, rating_b, winner, k)
     
-    # Apply ceiling for Player A if they gained ELO
+    # Apply ceiling for Player A if they gained ELO (using active players only)
     if new_rating_a > rating_a:
-        ceiling_a = get_elo_ceiling(player_a_id, player_b_id, current_elos)
+        ceiling_a = get_elo_ceiling(player_a_id, player_b_id, active_elos)
         if new_rating_a > ceiling_a:
             new_rating_a = ceiling_a
             # Adjust Player B's rating accordingly to maintain zero-sum property
             actual_gain_a = new_rating_a - rating_a
-            expected_gain_a = (new_rating_a - rating_a) if ceiling_a == float('inf') else actual_gain_a
             
             # Calculate what B's rating should be to maintain zero-sum
             if winner.upper() == 'A':
@@ -159,9 +176,9 @@ def update_elo_with_ceiling(rating_a: float,
                 rating_loss_b = actual_gain_a
                 new_rating_b = rating_b - rating_loss_b
     
-    # Apply ceiling for Player B if they gained ELO
+    # Apply ceiling for Player B if they gained ELO (using active players only)
     if new_rating_b > rating_b:
-        ceiling_b = get_elo_ceiling(player_b_id, player_a_id, current_elos)
+        ceiling_b = get_elo_ceiling(player_b_id, player_a_id, active_elos)
         if new_rating_b > ceiling_b:
             new_rating_b = ceiling_b
             # Adjust Player A's rating accordingly to maintain zero-sum property
@@ -376,9 +393,35 @@ def calculate_top_ten_played_pandas(matches_df: pd.DataFrame, participants_df: p
     
     return players_updated
 
+def get_inactive_player_last_match_dates(players_df: pd.DataFrame, matches_df: pd.DataFrame, 
+                                       participants_df: pd.DataFrame) -> Dict[str, datetime]:
+    """Pre-compute last match dates for all inactive players"""
+    inactive_players = set(players_df[players_df['inactive'].fillna(False)]['id'].tolist())
+    inactive_player_dates = {}
+    
+    for player_id in inactive_players:
+        # Get all matches this player participated in
+        player_matches = participants_df[participants_df['player'] == player_id]
+        if len(player_matches) > 0:
+            # Join with matches to get dates, using suffixes to avoid column name conflicts
+            player_match_data = player_matches.merge(matches_df[['id', 'created_at']], 
+                                                   left_on='match_id', right_on='id', 
+                                                   how='inner', suffixes=('', '_match'))
+            
+            if len(player_match_data) > 0:
+                # Convert dates and get their last match date
+                player_match_data['match_datetime'] = pd.to_datetime(player_match_data['created_at_match'], utc=True)
+                last_match_date = player_match_data['match_datetime'].max()
+                inactive_player_dates[player_id] = last_match_date
+    
+    return inactive_player_dates
+
 def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFrame, 
                          players_updated: pd.DataFrame) -> pd.DataFrame:
     """Second pass: Calculate ELOs only for matches between ranked players with rank ceiling after Aug 15, 2025"""
+    
+    # Pre-compute last match dates for inactive players (optimization)
+    inactive_player_dates = get_inactive_player_last_match_dates(players_updated, matches_df, participants_df)
     
     # Get ranked players (top_ten_played_new >= 3)
     ranked_player_ids = set(players_updated[players_updated['top_ten_played_new'] >= 3]['id'].tolist())
@@ -430,12 +473,16 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
                 match_date_str += '+00:00'
             
             match_date = datetime.fromisoformat(match_date_str)
+            # Ensure match_date is timezone-aware (UTC)
+            if match_date.tzinfo is None:
+                match_date = match_date.replace(tzinfo=timezone.utc)
             use_rank_ceiling = match_date >= RANK_CEILING_START_DATE
             
             if use_rank_ceiling:
                 # Calculate new ELOs with rank ceiling
                 new_elo1, new_elo2 = update_elo_with_ceiling(
-                    elo1, elo2, winner, player1_id, player2_id, current_elos
+                    elo1, elo2, winner, player1_id, player2_id, current_elos, 
+                    inactive_player_dates, match_date
                 )
                 
                 # Check if ceiling was applied
