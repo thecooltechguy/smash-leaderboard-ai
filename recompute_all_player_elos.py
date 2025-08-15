@@ -87,7 +87,7 @@ def get_all_players() -> tuple[Dict[str, Dict], set]:
         for player in response.data:
             players[player['id']] = {
                 'id': player['id'],
-                'name': player['name'],
+                'name': player['display_name'],
                 'elo': 1200,  # Reset to initial ELO
                 'top_ten_played': player.get('top_ten_played', 0),  # Original value for ranking check
                 'top_ten_faced_set': set()  # Track unique top 10 players faced
@@ -464,7 +464,7 @@ def recompute_all_player_elos():
     final_rankings = players_final.sort_values('elo_final', ascending=False)
     
     for rank, (_, player) in enumerate(final_rankings.iterrows(), 1):
-        print(f"{rank:2d}. {player['name']:<20} - {int(player['elo_final']):4d} ELO (top_ten_played: {int(player['top_ten_played_new'])})")
+        print(f"{rank:2d}. {player['display_name']:<20} - {int(player['elo_final']):4d} ELO (top_ten_played: {int(player['top_ten_played_new'])})")
     
     print("\n" + "="*60)
     print("PANDAS METHOD FINAL ELOS (for comparison):")

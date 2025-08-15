@@ -234,7 +234,7 @@ keep the following in mind:
         try:
             response = (
                 supabase_client.table("players")
-                .upsert({"name": player_name}, on_conflict="name")
+                .upsert({"display_name": player_name}, on_conflict="display_name")
                 .execute()
             )
             return response.data[0]
@@ -339,7 +339,7 @@ keep the following in mind:
                 players.append({
                     "id": player['id'], 
                     "elo": player['elo'], 
-                    "name": player['name'], 
+                    "name": player['display_name'], 
                     "character": stat.smash_character,
                     "has_won": stat.has_won,
                     "kos": stat.total_kos,
@@ -348,7 +348,7 @@ keep the following in mind:
                 })
                 
                 if stat.has_won:
-                    winners.append(player['name'])
+                    winners.append(player['display_name'])
             
             # Print match results
             self.logger.info("=" * 60)
