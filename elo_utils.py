@@ -370,16 +370,29 @@ def calculate_elo_update_for_streaming(rating_a: float, rating_b: float, winner:
                                      supabase_client: Client, k: int = 32) -> Tuple[int, int, bool]:
     """
     High-level function to calculate ELO update for streaming (real-time) processing.
+    Only processes ELO updates if both players are ranked (top_ten_played >= 3).
     
     Returns:
         tuple[int, int, bool]: (new_elo_a, new_elo_b, ceiling_applied)
     """
+    # Check if both players are ranked before processing ELO updates
+    players_response = supabase_client.table("players").select("id, elo, top_ten_played").execute()
+    players_data = {p['id']: p for p in players_response.data}
+    
+    player_a_data = players_data.get(player_a_id)
+    player_b_data = players_data.get(player_b_id)
+    
+    # Return original ELOs if either player is not found or not ranked
+    if (not player_a_data or not player_b_data or 
+        player_a_data.get('top_ten_played', 0) < 3 or 
+        player_b_data.get('top_ten_played', 0) < 3):
+        return int(rating_a), int(rating_b), False
+    
     use_rank_ceiling = should_use_rank_ceiling()
     
     if use_rank_ceiling:
         # Get current ELOs for all players for rank ceiling calculation
-        all_players_response = supabase_client.table("players").select("id, elo").execute()
-        current_elos = {p['id']: p['elo'] for p in all_players_response.data}
+        current_elos = {p['id']: p['elo'] for p in players_response.data}
         
         # Get or create daily snapshot for rank ceiling calculations
         snapshot_elos = get_or_create_daily_snapshot(supabase_client, current_elos)
