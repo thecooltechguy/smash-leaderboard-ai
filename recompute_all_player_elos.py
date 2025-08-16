@@ -21,7 +21,7 @@ import pytz
 from elo_utils import (
     RANK_CEILING_START_DATE, update_elo, get_player_ranking, 
     get_elo_ceiling, get_inactive_player_last_match_dates_from_dataframes,
-    calculate_elo_update_for_batch
+    calculate_elo_update_for_batch, get_or_create_daily_snapshot
 )
 
 # Load environment variables from .env file
@@ -479,6 +479,10 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
     no_clear_winner = 0
     not_both_ranked = 0
     
+    # Track current snapshot for daily rank ceiling calculations
+    current_snapshot_date = None
+    current_snapshot_elos = None
+    
     for _, match in valid_matches_df.iterrows():
         match_id = match['id']
         match_participants = participants_df[participants_df['match_id'] == match_id]
@@ -517,10 +521,19 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
                 match_date = match_date.replace(tzinfo=timezone.utc)
             use_rank_ceiling = match_date >= RANK_CEILING_START_DATE
             
+            # Handle daily snapshots for rank ceiling calculations
+            if use_rank_ceiling:
+                match_date_str_for_snapshot = match_date.strftime('%Y-%m-%d')
+                if current_snapshot_date != match_date_str_for_snapshot:
+                    # New day - get/create snapshot using current ELOs (start-of-day state)
+                    print(f"    Getting/creating snapshot for {match_date_str_for_snapshot}")
+                    current_snapshot_elos = get_or_create_daily_snapshot(supabase_client, current_elos.copy())
+                    current_snapshot_date = match_date_str_for_snapshot
+            
             # Use shared batch ELO calculation
             new_elo1, new_elo2, ceiling_applied_for_match = calculate_elo_update_for_batch(
                 elo1, elo2, winner, player1_id, player2_id, 
-                current_elos, inactive_player_dates, match_date
+                current_elos, inactive_player_dates, match_date, current_snapshot_elos
             )
             
             if ceiling_applied_for_match:
