@@ -242,15 +242,31 @@ def update_top_ten_played(player1_id: str, player2_id: str, players: Dict[str, D
         print(f"    DEBUG: {players[player2_id]['name']} faced top 10 player {players[player1_id]['name']}")
 
 def get_all_matches_chronological() -> List[Dict]:
-    """Get all matches ordered by created_at"""
+    """Get all matches ordered by created_at (exclude archived matches)"""
     try:
-        response = (
-            supabase_client.table("matches")
-            .select("*")
-            .order("created_at", desc=False)
-            .execute()
-        )
-        return response.data
+        all_matches = []
+        page_size = 1000
+        start = 0
+        
+        while True:
+            response = (supabase_client.table("matches")
+                       .select("*")
+                       .eq("archived", False)
+                       .order("created_at", desc=False)
+                       .range(start, start + page_size - 1)
+                       .execute())
+            
+            if not response.data:
+                break
+                
+            all_matches.extend(response.data)
+            
+            if len(response.data) < page_size:
+                break
+                
+            start += page_size
+        
+        return all_matches
     except Exception as e:
         print(f"Error fetching matches: {e}")
         return []
@@ -294,9 +310,30 @@ def fetch_all_data_pandas() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     players_response = supabase_client.table("players").select("*").execute()
     players_df = pd.DataFrame(players_response.data)
     
-    # Fetch matches
-    matches_response = supabase_client.table("matches").select("*").order("created_at", desc=False).execute()
-    matches_df = pd.DataFrame(matches_response.data)
+    # Fetch all matches with pagination (exclude archived matches)
+    all_matches = []
+    page_size = 1000
+    start = 0
+    
+    while True:
+        matches_response = (supabase_client.table("matches")
+                           .select("*")
+                           .eq("archived", False)
+                           .order("created_at", desc=False)
+                           .range(start, start + page_size - 1)
+                           .execute())
+        
+        if not matches_response.data:
+            break
+            
+        all_matches.extend(matches_response.data)
+        
+        if len(matches_response.data) < page_size:
+            break
+            
+        start += page_size
+    
+    matches_df = pd.DataFrame(all_matches)
     
     # Fetch all match participants with pagination
     all_participants = []
@@ -421,6 +458,8 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
     # Get ranked players (top_ten_played_new >= 3)
     ranked_player_ids = set(players_updated[players_updated['top_ten_played_new'] >= 3]['id'].tolist())
     
+    print(f"    Total ranked players: {len(ranked_player_ids)}")
+    
     # Initialize ELOs to 1200 for all players
     current_elos = {player_id: 1200 for player_id in players_updated['id']}
     
@@ -428,12 +467,17 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
     match_participant_counts = participants_df.groupby('match_id').size()
     valid_matches = match_participant_counts[match_participant_counts == 2].index
     
+    print(f"    Total matches fetched: {len(matches_df)}")
+    print(f"    1v1 matches: {len(valid_matches)}")
+    
     # Sort matches chronologically
     valid_matches_df = matches_df[matches_df['id'].isin(valid_matches)].sort_values('created_at')
     
     elo_updates = 0
     ceiling_applied = 0
     processed = 0
+    no_clear_winner = 0
+    not_both_ranked = 0
     
     for _, match in valid_matches_df.iterrows():
         match_id = match['id']
@@ -484,19 +528,22 @@ def calculate_elos_pandas(matches_df: pd.DataFrame, participants_df: pd.DataFram
                 # Get player names for debugging
                 p1_name = players_updated[players_updated['id'] == player1_id]['display_name'].iloc[0]
                 p2_name = players_updated[players_updated['id'] == player2_id]['display_name'].iloc[0]
-                match_date_str = match_date.strftime('%Y-%m-%d')
+                match_datetime_str = match_date.strftime('%Y-%m-%d %H:%M:%S')
                 normal_elo1, normal_elo2 = update_elo(elo1, elo2, winner)
-                print(f"    Ceiling applied ({match_date_str}): {p1_name} vs {p2_name} - Normal: ({normal_elo1}, {normal_elo2}) -> Ceiling: ({new_elo1}, {new_elo2})")
+                print(f"    Ceiling applied ({match_datetime_str}): {p1_name} vs {p2_name} - Normal: ({normal_elo1}, {normal_elo2}) -> Ceiling: ({new_elo1}, {new_elo2})")
             
             # Update ELOs
             current_elos[player1_id] = new_elo1
             current_elos[player2_id] = new_elo2
             
             elo_updates += 1
+        else:
+            not_both_ranked += 1
         
         processed += 1
     
     print(f"    Processed {processed} matches, {elo_updates} ELO updates, {ceiling_applied} ceiling applications (post Aug 15, 2025)")
+    print(f"    Breakdown: {no_clear_winner} no clear winner, {not_both_ranked} not both ranked")
     
     # Update players dataframe with final ELOs
     players_final = players_updated.copy()
@@ -534,9 +581,30 @@ def recompute_all_player_elos_old_method():
     original_top_ten = sorted(ranked_players, key=lambda p: p['elo'], reverse=True)[:10]
     original_top_ten_ids = {player['id'] for player in original_top_ten}
     
-    # Get matches
-    matches_response = supabase_client.table("matches").select("*").order("created_at", desc=False).execute()
-    matches = matches_response.data
+    # Get all matches with pagination (exclude archived matches)
+    all_matches = []
+    page_size = 1000
+    start = 0
+    
+    while True:
+        matches_response = (supabase_client.table("matches")
+                           .select("*")
+                           .eq("archived", False)
+                           .order("created_at", desc=False)
+                           .range(start, start + page_size - 1)
+                           .execute())
+        
+        if not matches_response.data:
+            break
+            
+        all_matches.extend(matches_response.data)
+        
+        if len(matches_response.data) < page_size:
+            break
+            
+        start += page_size
+    
+    matches = all_matches
     
     elo_updates = 0
     for match in matches:
@@ -689,33 +757,16 @@ def recompute_all_player_elos():
         except Exception as e:
             print(f"  Failed to update {player['name']}: {e}")
     
-    # Step 7: Print comparison of rankings
-    print("\n" + "="*80)
-    print("RANK CEILING COMPARISON")
-    print("="*80)
-    
-    # Sort both by final ELO
-    final_rankings_ceiling = players_final_ceiling.sort_values('elo_final', ascending=False)
-    
-    # Create ranking comparison
-    print(f"{'Rank':<4} {'Player':<20} {'With Ceiling':<12} {'Without Ceiling':<15} {'Difference':<10}")
-    print("-" * 80)
-    
-    for rank, (_, player_ceiling) in enumerate(final_rankings_ceiling.iterrows(), 1):
-        player_id = player_ceiling['id']
-        player_no_ceiling = players_final_no_ceiling[players_final_no_ceiling['id'] == player_id].iloc[0]
-        
-        elo_ceiling = int(player_ceiling['elo_final'])
-        elo_no_ceiling = int(player_no_ceiling['elo_final'])
-        difference = elo_ceiling - elo_no_ceiling
-        
-        print(f"{rank:<4} {player_ceiling['display_name']:<20} {elo_ceiling:<12} {elo_no_ceiling:<15} {difference:+d}")
-    
+    # Step 7: Print final rankings (exclude 1200 ELO unranked players)
     print("\n" + "="*60)
     print("FINAL ELO RANKINGS (WITH RANK CEILING)")
     print("="*60)
     
-    for rank, (_, player) in enumerate(final_rankings_ceiling.iterrows(), 1):
+    # Sort by final ELO and filter out 1200 ELO players
+    final_rankings_ceiling = players_final_ceiling.sort_values('elo_final', ascending=False)
+    ranked_players = final_rankings_ceiling[final_rankings_ceiling['elo_final'] != 1200]
+    
+    for rank, (_, player) in enumerate(ranked_players.iterrows(), 1):
         print(f"{rank:2d}. {player['display_name']:<20} - {int(player['elo_final']):4d} ELO (top_ten_played: {int(player['top_ten_played_new'])})")
     
     print("="*60)

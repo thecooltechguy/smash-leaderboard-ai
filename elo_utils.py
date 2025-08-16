@@ -114,10 +114,11 @@ def get_inactive_player_last_match_dates_from_db(supabase_client: Client) -> Dic
                 # Get all match IDs
                 match_ids = [p['match_id'] for p in participants_response.data]
                 
-                # Get the most recent match date from these matches
+                # Get the most recent match date from these matches (exclude archived)
                 matches_response = supabase_client.table("matches")\
                     .select("created_at")\
                     .in_("id", match_ids)\
+                    .eq("archived", False)\
                     .order("created_at", desc=True)\
                     .limit(1)\
                     .execute()

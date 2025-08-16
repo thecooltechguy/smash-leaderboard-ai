@@ -167,10 +167,11 @@ def show_daily_stats(date: str = None):
         return
     
     try:
-        # Get all matches for the date
+        # Get all matches for the date (exclude archived matches)
         response = (
             supabase_client.table("matches")
             .select("*, match_participants!inner(*, players!inner(name))")
+            .eq("archived", False)
             .gte("created_at", date)
             .lt("created_at", (datetime.datetime.fromisoformat(date) + datetime.timedelta(days=1)).isoformat())
             .execute()
