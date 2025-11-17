@@ -70,7 +70,7 @@ class SmashBrosProcessor:
     def __init__(self, device_index=0, output_dir="matches", test_mode=False, test_video_path=None,
                  center_region_top=0.3, center_region_bottom=0.7, center_region_left=0.1, center_region_right=0.9,
                  game_region_top=0.1, game_region_bottom=0.5, game_region_left=0.2, game_region_right=0.8,
-                 consecutive_black_threshold_secs=0.5, play_video=False, video_slowdown_factor=10):
+                 consecutive_black_threshold_secs=0.5, play_video=False, video_slowdown_factor=10, rolling_window_days=30):
         """
         Initialize the Smash Bros match processor
         
@@ -90,6 +90,7 @@ class SmashBrosProcessor:
             consecutive_black_threshold_secs: Minimum consecutive black screen duration in seconds to detect as a black period
             play_video: Whether to play the video in real-time (test mode only)
             video_slowdown_factor: Factor to slow down result screen videos for better API processing (default: 10)
+            rolling_window_days: Number of days to keep match files. Files older than this will be automatically deleted. Default: 30 days.
         """
         self.device_index = device_index
         self.output_dir = output_dir
@@ -97,6 +98,7 @@ class SmashBrosProcessor:
         self.test_video_path = test_video_path
         self.play_video = play_video
         self.video_slowdown_factor = video_slowdown_factor
+        self.rolling_window_days = rolling_window_days
         
         # Region boundaries (as fractions of frame dimensions)
         self.center_region_top = center_region_top
@@ -516,7 +518,7 @@ class SmashBrosProcessor:
         Start recording a new match
         """
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_match_{self.match_counter:03d}.mp4"
+        filename = f"{self.match_counter:03d}-{timestamp}_match_{self.match_counter:03d}.mp4"
         filepath = os.path.join(self.output_dir, filename)
         
         # Use H.264 codec for better compatibility
@@ -579,6 +581,73 @@ class SmashBrosProcessor:
             self.clear_frame_buffers()
             
             self.match_counter += 1
+            
+            # Cleanup old matches (automatic 30-day retention)
+            self.cleanup_old_matches()
+    
+    def cleanup_old_matches(self):
+        """
+        Delete match files older than the rolling window threshold.
+        Cleans up both match files and result screen files.
+        Skips cleanup in test mode.
+        """
+        if self.test_mode:
+            return  # Don't delete files during testing
+        
+        if self.rolling_window_days is None or self.rolling_window_days <= 0:
+            return  # Skip cleanup if disabled (0 or None)
+        
+        try:
+            cutoff_time = datetime.datetime.now() - datetime.timedelta(days=self.rolling_window_days)
+            cutoff_timestamp = cutoff_time.timestamp()
+            
+            deleted_count = 0
+            deleted_size = 0
+            
+            # Clean up match files in main directory
+            if os.path.exists(self.output_dir):
+                for filename in os.listdir(self.output_dir):
+                    filepath = os.path.join(self.output_dir, filename)
+                    # Skip directories and non-mp4 files
+                    if not os.path.isfile(filepath) or not filename.endswith('.mp4'):
+                        continue
+                    try:
+                        file_mtime = os.path.getmtime(filepath)
+                        if file_mtime < cutoff_timestamp:
+                            file_size = os.path.getsize(filepath)
+                            os.remove(filepath)
+                            deleted_count += 1
+                            deleted_size += file_size
+                            self.logger.info(f"Deleted old match file: {filename} (age: {(datetime.datetime.now().timestamp() - file_mtime) / 86400:.1f} days)")
+                    except OSError as e:
+                        self.logger.warning(f"Failed to delete file {filename}: {e}")
+            
+            # Clean up result screen files
+            if os.path.exists(self.result_screens_dir):
+                for filename in os.listdir(self.result_screens_dir):
+                    filepath = os.path.join(self.result_screens_dir, filename)
+                    # Skip directories and non-mp4 files
+                    if not os.path.isfile(filepath) or not filename.endswith('.mp4'):
+                        continue
+                    try:
+                        file_mtime = os.path.getmtime(filepath)
+                        if file_mtime < cutoff_timestamp:
+                            file_size = os.path.getsize(filepath)
+                            os.remove(filepath)
+                            deleted_count += 1
+                            deleted_size += file_size
+                            self.logger.info(f"Deleted old result screen file: {filename} (age: {(datetime.datetime.now().timestamp() - file_mtime) / 86400:.1f} days)")
+                    except OSError as e:
+                        self.logger.warning(f"Failed to delete file {filename}: {e}")
+            
+            if deleted_count > 0:
+                size_mb = deleted_size / (1024 * 1024)
+                self.logger.info(f"Cleanup complete: Deleted {deleted_count} file(s), freed {size_mb:.2f} MB")
+            else:
+                self.logger.debug(f"Cleanup complete: No files older than {self.rolling_window_days} days found")
+                
+        except Exception as e:
+            self.logger.error(f"Error during cleanup: {e}")
     
     def extract_result_screens(self):
         """
@@ -615,7 +684,7 @@ class SmashBrosProcessor:
         
         # Create result screen video filename
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_filename = f"{timestamp}_result_screen_match_{self.match_counter:03d}.mp4"
+        result_filename = f"{self.match_counter:03d}-{timestamp}_result_screen_match_{self.match_counter:03d}.mp4"
         result_filepath = os.path.join(self.result_screens_dir, result_filename)
         
         # Create video writer for result screens
@@ -1357,6 +1426,9 @@ def main():
     # Video processing arguments
     parser.add_argument('--video-slowdown-factor', type=int, default=10, help='Factor to slow down result screen videos for better API processing (default: 10)')
     
+    # Rolling window arguments
+    parser.add_argument('--rolling-window-days', type=int, default=30, help='Number of days to keep match files. Files older than this will be automatically deleted (default: 30). Set to 0 to disable cleanup.')
+    
     args = parser.parse_args()
     
     if args.test and not args.video:
@@ -1401,7 +1473,8 @@ def main():
         game_region_right=args.game_region_right,
         consecutive_black_threshold_secs=args.black_frame_threshold_secs,
         play_video=args.play_video,
-        video_slowdown_factor=args.video_slowdown_factor
+        video_slowdown_factor=args.video_slowdown_factor,
+        rolling_window_days=args.rolling_window_days
     )
     
     # Handle test-threshold mode
