@@ -533,20 +533,15 @@ class SmashBrosProcessor:
         """
         Start recording a new match
         """
-        # Create match in database first to get the match ID
+        # Create match in database first (always)
         if not self.test_mode:
             self.current_match_id = self.create_match()
             if self.current_match_id is None:
-                self.logger.warning("Failed to create match in database, using match counter for filename")
-                match_id_str = f"{self.match_counter:03d}"
-            else:
-                match_id_str = str(self.current_match_id)
-        else:
-            # In test mode, use match counter
-            match_id_str = f"{self.match_counter:03d}"
+                self.logger.warning("Failed to create match in database")
         
+        # Use timestamp-only filename initially (will be renamed if eligible)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{match_id_str}-{timestamp}.mp4"
+        filename = f"{timestamp}.mp4"
         filepath = os.path.join(self.output_dir, filename)
         
         # Use H.264 codec for better compatibility
@@ -557,8 +552,9 @@ class SmashBrosProcessor:
             self.logger.warning(f"Failed to create video writer for {filepath}")
             return None
         
-        # Store current match filepath for metadata addition later
+        # Store current match filepath for metadata addition and potential renaming later
         self.current_match_filepath = filepath
+        self.current_result_screen_filepath = None  # Will be set when result screen is saved
         
         self.logger.info(f"Started recording: {filename}")
         
@@ -713,12 +709,12 @@ class SmashBrosProcessor:
         
         # Create result screen video filename
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        if self.current_match_id:
-            match_id_str = str(self.current_match_id)
-        else:
-            match_id_str = f"{self.match_counter:03d}"
-        result_filename = f"{match_id_str}-{timestamp}_result_screen.mp4"
+        # Use timestamp-only filename initially (will be renamed if eligible)
+        result_filename = f"{timestamp}_result_screen.mp4"
         result_filepath = os.path.join(self.result_screens_dir, result_filename)
+        
+        # Store result screen filepath for potential renaming
+        self.current_result_screen_filepath = result_filepath
         
         # Create video writer for result screens
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -758,8 +754,8 @@ class SmashBrosProcessor:
                             participant_names = [stat.player_name for stat in match_stats]
                             self.add_metadata_to_mp4(result_filepath, participant_names)
                         
-                        # Save match stats to database (pass existing match_id if we created it early)
-                        self.save_match_stats(match_stats, match_id=self.current_match_id)
+                        # Save match stats to database (match will be created if eligible)
+                        self.save_match_stats(match_stats)
                     else:
                         print("Failed to extract match stats, skipping database save")
                 except Exception as e:
@@ -1243,6 +1239,7 @@ keep the following in mind:
             print("Warning: Supabase client not available, skipping database save")
             return
         
+        # Check if match should be skipped (eligibility checks)
         match_is_no_contest = all(not stat.has_won for stat in stats)
         if match_is_no_contest:
             print("Match is a no contest, skipping database save")
@@ -1251,6 +1248,11 @@ keep the following in mind:
         match_has_cpu = any(stat.is_cpu for stat in stats)
         if match_has_cpu:
             print("Match has CPU, skipping database save")
+            return
+        
+        # Skip online matches
+        if stats and stats[0].is_online_match:
+            print("Match is online, skipping database save")
             return
         
         match_has_unknown_players = False
@@ -1264,11 +1266,17 @@ keep the following in mind:
             print("Match has unknown players (Player 1,2,3,etc.), skipping database save")
             return
 
+        # Use existing match_id (created when recording started)
         try:
             if match_id is None:
-                match_id = self.create_match()
-                if match_id is None:
-                    return
+                match_id = self.current_match_id
+            
+            if match_id is None:
+                self.logger.error("No match ID available, cannot save match stats")
+                return
+            
+            # Match passed all eligibility checks - rename files to include match ID
+            self.rename_match_files(match_id)
             
             players = []
             winners = []
@@ -1365,6 +1373,49 @@ keep the following in mind:
             
         except Exception as e:
             print(f"Error saving match stats: {e}")
+    
+    def rename_match_files(self, match_id: int):
+        """
+        Rename match files to include match ID if they exist
+        Format: {match_id}-{timestamp}.mp4
+        """
+        try:
+            # Rename main match file
+            if self.current_match_filepath and os.path.exists(self.current_match_filepath):
+                old_path = self.current_match_filepath
+                old_dir = os.path.dirname(old_path)
+                old_filename = os.path.basename(old_path)
+                
+                # Extract timestamp from old filename (format: YYYYMMDD_HHMMSS.mp4)
+                if old_filename.endswith('.mp4'):
+                    timestamp_part = old_filename[:-4]  # Remove .mp4
+                    new_filename = f"{match_id}-{timestamp_part}.mp4"
+                    new_path = os.path.join(old_dir, new_filename)
+                    
+                    if old_path != new_path:
+                        os.rename(old_path, new_path)
+                        self.current_match_filepath = new_path
+                        self.logger.info(f"Renamed match file: {old_filename} -> {new_filename}")
+            
+            # Rename result screen file
+            if self.current_result_screen_filepath and os.path.exists(self.current_result_screen_filepath):
+                old_path = self.current_result_screen_filepath
+                old_dir = os.path.dirname(old_path)
+                old_filename = os.path.basename(old_path)
+                
+                # Extract timestamp from old filename (format: YYYYMMDD_HHMMSS_result_screen.mp4)
+                if old_filename.endswith('_result_screen.mp4'):
+                    timestamp_part = old_filename[:-17]  # Remove _result_screen.mp4
+                    new_filename = f"{match_id}-{timestamp_part}_result_screen.mp4"
+                    new_path = os.path.join(old_dir, new_filename)
+                    
+                    if old_path != new_path:
+                        os.rename(old_path, new_path)
+                        self.current_result_screen_filepath = new_path
+                        self.logger.info(f"Renamed result screen file: {old_filename} -> {new_filename}")
+                        
+        except Exception as e:
+            self.logger.error(f"Error renaming match files: {e}")
     
     def add_metadata_to_mp4(self, filepath: str, participants: List[str]):
         """Add participant names to MP4 file metadata"""
