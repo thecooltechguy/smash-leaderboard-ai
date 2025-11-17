@@ -159,8 +159,8 @@ class SmashBrosProcessor:
         self.max_recording_frames = 3600  # Limit to ~1 minute at 60fps to prevent memory issues
         self.frame_skip_count = 0  # Skip frames to reduce memory usage
         self.frame_skip_interval = 2  # Store every 2nd frame to reduce memory usage
-        self.frame_30_image = None  # Store frame 30 (1 second into match) for player identification
-        self.current_frame_30_image_path = None  # Path to saved frame 30 image file
+        self.frame_30_image = None  # Store frame 25 (~0.83 seconds at 30fps) for player identification
+        self.current_frame_30_image_path = None  # Path to saved frame 25 image file
         
         # Create output directory
         if not os.path.exists(output_dir):
@@ -570,8 +570,8 @@ class SmashBrosProcessor:
         self.clear_frame_buffers()
         self.current_recording_frame_index = 0
         self.frame_skip_count = 0
-        self.frame_30_image = None  # Reset frame 30 image for new match
-        self.current_frame_30_image_path = None  # Reset frame 30 image path for new match
+        self.frame_30_image = None  # Reset frame 25 image for new match
+        self.current_frame_30_image_path = None  # Reset frame 25 image path for new match
         
         return filepath
     
@@ -734,13 +734,15 @@ class SmashBrosProcessor:
         
         result_out.release()
         
-        # Save frame 30 image if available (for player identification)
+        # Save frame 25 image if available (for player identification)
+        # Save it with the same base name as the result screen video for easy matching
         frame_30_image_path = None
         if self.frame_30_image is not None:
-            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            frame_30_image_path = os.path.join(self.result_screens_dir, f"{timestamp}_frame_30.png")
+            # Use the same base name as the result screen video
+            result_base_name = os.path.splitext(result_filename)[0]  # Remove .mp4 extension
+            frame_30_image_path = os.path.join(self.result_screens_dir, f"{result_base_name}_frame_25.png")
             cv2.imwrite(frame_30_image_path, self.frame_30_image)
-            self.logger.info(f"Saved frame 30 image: {os.path.basename(frame_30_image_path)}")
+            self.logger.info(f"Saved frame 25 image: {os.path.basename(frame_30_image_path)}")
         
         # Calculate duration
         duration_seconds = len(result_frames) / self.fps if self.fps > 0 else 0
@@ -750,7 +752,7 @@ class SmashBrosProcessor:
         self.logger.info(f"  Starting from frame with confidence: {best_confidence:.3f}")
         self.logger.info(f"  Frame index in match: {best_frame_index}/{len(self.recording_frames)-1}")
         
-        # Store frame 30 image path for use in get_match_stats
+        # Store frame 25 image path for use in get_match_stats
         self.current_frame_30_image_path = frame_30_image_path
         
         # Extract player stats and save to database (only when NOT in test mode)
@@ -877,10 +879,11 @@ class SmashBrosProcessor:
             if self.out:
                 self.out.write(frame)
             
-            # Capture frame 30 (1 second at 30fps) for player identification
-            if self.current_recording_frame_index == 30:
+            # Capture frame 25 (~0.83 seconds at 30fps) for player identification
+            # Check BEFORE incrementing, so index 24 = frame 25 (0-indexed)
+            if self.current_recording_frame_index == 24:
                 self.frame_30_image = frame.copy()
-                self.logger.info(f"Captured frame 30 (1 second into match) for player identification")
+                self.logger.info(f"Captured frame 25 (~0.83 seconds into match) for player identification")
             
             # Store frame and game end confidence for result screen extraction (with frame skipping)
             self.frame_skip_count += 1
@@ -1114,7 +1117,7 @@ class SmashBrosProcessor:
     def get_match_stats(self, match_results_video_filepath: str, slowdown_factor: int = None) -> Optional[List[PlayerStats]]:
         """
         Extract player stats from a match results video using Gemini API
-        Appends frame 30 (1 second into match) image to help identify players
+        Includes frame 25 (~0.83 seconds into match) image to help identify players
         """
         if not gemini_client:
             print("Warning: Gemini client not available, skipping stats extraction")
@@ -1128,82 +1131,48 @@ class SmashBrosProcessor:
             print(f"Extracting player stats from result screen video: {match_results_video_filepath}")
             print(f"Using video slowdown factor: {slowdown_factor}x")
             
-            # Check if frame 30 image exists and append it to the video
+            # Slow down the result screen video
             final_video_filepath = "./current_match_results_video.mp4"
-            frame_30_image_path = getattr(self, 'current_frame_30_image_path', None)
-            combined_video_path = None
+            # Maintain original FPS so video plays slowly (not sped up)
+            ffmpeg_cmd = f"ffmpeg -y -an -i \"{match_results_video_filepath}\" -vf \"setpts={slowdown_factor}*PTS\" -r {self.fps} -map_metadata 0 \"{final_video_filepath}\" -loglevel quiet"
             
-            if frame_30_image_path and os.path.exists(frame_30_image_path):
-                print(f"Appending frame 30 image to result screen video for player identification")
-                
-                # Create a temporary video from the frame 30 image (2 seconds duration)
-                frame_30_video_path = "./temp_frame_30_video.mp4"
-                # Create video from image: loop for 2 seconds at 30fps = 60 frames
-                create_image_video_cmd = (
-                    f"ffmpeg -y -loop 1 -i \"{frame_30_image_path}\" "
-                    f"-t 2 -r 30 -vf \"scale={self.width}:{self.height}\" "
-                    f"-pix_fmt yuv420p \"{frame_30_video_path}\" -loglevel quiet"
-                )
-                
-                if os.system(create_image_video_cmd) != 0:
-                    print("Warning: Failed to create video from frame 30 image, proceeding without it")
-                else:
-                    # Concatenate frame 30 video with result screen video, then slow down
-                    # Create a temporary file list for ffmpeg concat
-                    concat_list_path = "./temp_concat_list.txt"
-                    with open(concat_list_path, 'w') as f:
-                        f.write(f"file '{frame_30_video_path}'\n")
-                        f.write(f"file '{match_results_video_filepath}'\n")
-                    
-                    # Concatenate videos and slow down in one command
-                    combined_video_path = "./temp_combined_video.mp4"
-                    concat_cmd = (
-                        f"ffmpeg -y -f concat -safe 0 -i \"{concat_list_path}\" "
-                        f"-vf \"setpts={slowdown_factor}*PTS\" -an \"{combined_video_path}\" -loglevel quiet"
-                    )
-                    
-                    if os.system(concat_cmd) != 0:
-                        print("Warning: Failed to concatenate videos, proceeding with result screen only")
-                        combined_video_path = None
-                    else:
-                        # Clean up temporary files
-                        try:
-                            os.remove(frame_30_video_path)
-                            os.remove(concat_list_path)
-                        except:
-                            pass
+            if os.system(ffmpeg_cmd) != 0:
+                print("Error: Failed to process video with ffmpeg")
+                return None
             
-            # Slow down the video (if not already done in concatenation step)
-            if combined_video_path and os.path.exists(combined_video_path):
-                # Combined video already slowed down, just rename it
-                if os.path.exists(final_video_filepath):
-                    os.remove(final_video_filepath)
-                os.rename(combined_video_path, final_video_filepath)
-            else:
-                # Slow down the result screen video only
-                ffmpeg_cmd = f"ffmpeg -y -an -i \"{match_results_video_filepath}\" -vf \"setpts={slowdown_factor}*PTS\" -map_metadata 0 \"{final_video_filepath}\" -loglevel quiet"
-                
-                if os.system(ffmpeg_cmd) != 0:
-                    print("Error: Failed to process video with ffmpeg")
-                    return None
-            
-            # Upload file to Gemini
+            # Upload video file to Gemini
             print("Uploading video to Gemini API...")
-            file = gemini_client.files.upload(file=final_video_filepath)
+            video_file = gemini_client.files.upload(file=final_video_filepath)
             
-            # Wait for file to be processed
+            # Wait for video file to be processed
             while True:
-                file_info = gemini_client.files.get(name=file.name)
+                file_info = gemini_client.files.get(name=video_file.name)
                 if file_info.state == "ACTIVE":
                     break
                 time.sleep(1)
             
-            # Prepare content for Gemini
-            frame_30_note = ""
-            if frame_30_image_path and os.path.exists(frame_30_image_path):
-                frame_30_note = "\n\nIMPORTANT: The video starts with a frame captured exactly 1 second (30 frames) into the match recording. This frame shows the character select screen or early game screen which displays player names clearly. Use this frame to help identify the player names, as players often click through the result screen menu too quickly. After this initial frame, the video shows the result screen.\n"
+            # Check if frame 25 image exists and upload it separately
+            frame_30_image_path = getattr(self, 'current_frame_30_image_path', None)
+            image_file = None
             
+            if frame_30_image_path and os.path.exists(frame_30_image_path):
+                print(f"Uploading frame 25 image to Gemini API for player identification...")
+                image_file = gemini_client.files.upload(file=frame_30_image_path)
+                
+                # Wait for image file to be processed
+                while True:
+                    file_info = gemini_client.files.get(name=image_file.name)
+                    if file_info.state == "ACTIVE":
+                        break
+                    time.sleep(1)
+            
+            # Prepare content for Gemini
             # Build the prompt text
+            if image_file:
+                frame_30_note = "\n\nIMPORTANT: I've also included a frame captured at 25 frames (~0.83 seconds) into the match recording. This frame shows the character select screen or early game screen which displays player names clearly. Use this image to help identify the player names, as players often click through the result screen menu too quickly.\n"
+            else:
+                frame_30_note = ""
+            
             prompt_text = """Here is a video recording of the results screen of a super smash bros ultimate match.""" + frame_30_note + """
 
 Output the following information about the game's results as valid json following this schema (where it's a list of json objects -- one for each player in the match):
@@ -1236,15 +1205,26 @@ keep the following in mind:
 - Sometimes the rectangular player card does not show the KO's, Falls, or SD's, but instead shows "READY FOR THE NEXT BATTLE". In this case, set the player name to "unknown" (all in lowercase), with 0 for the total number of KOs, Falls, and SDs and not cpu and not online and not has_won and smash character also as "unknown".
 """
             
-            contents = [    
-                file,
+            # Build contents array with video and optionally image
+            # Files can be passed directly in contents array, or in parts array
+            contents = []
+            
+            # Add image first if available (so Gemini sees it before the video)
+            if image_file:
+                contents.append(image_file)
+            
+            # Add video
+            contents.append(video_file)
+            
+            # Add text prompt
+            contents.append(
                 types.Content(
                     role="user",
                     parts=[
                         types.Part.from_text(text=prompt_text),
                     ],
                 ),
-            ]
+            )
 
             print("Analyzing video with Gemini API...")
             response = gemini_client.models.generate_content(
@@ -1256,8 +1236,10 @@ keep the following in mind:
                 contents=contents,
             )
             
-            # Clean up uploaded file
-            gemini_client.files.delete(name=file.name)
+            # Clean up uploaded files
+            gemini_client.files.delete(name=video_file.name)
+            if image_file:
+                gemini_client.files.delete(name=image_file.name)
             
             # Clean up temporary video file
             try:
@@ -1492,6 +1474,14 @@ keep the following in mind:
                         os.rename(old_path, new_path)
                         self.current_result_screen_filepath = new_path
                         self.logger.info(f"Renamed result screen file: {old_filename} -> {new_filename}")
+                        
+                        # Also rename the frame 25 image if it exists (should have same base name)
+                        frame_30_old_path = os.path.join(old_dir, f"{timestamp_part}_result_screen_frame_25.png")
+                        if os.path.exists(frame_30_old_path):
+                            frame_30_new_path = os.path.join(old_dir, f"{match_id}-{timestamp_part}_result_screen_frame_25.png")
+                            os.rename(frame_30_old_path, frame_30_new_path)
+                            self.current_frame_30_image_path = frame_30_new_path
+                            self.logger.info(f"Renamed frame 25 image: {os.path.basename(frame_30_old_path)} -> {os.path.basename(frame_30_new_path)}")
                         
         except Exception as e:
             self.logger.error(f"Error renaming match files: {e}")
