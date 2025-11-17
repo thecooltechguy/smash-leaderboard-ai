@@ -311,108 +311,107 @@ def update_inactivity_status(supabase_client: Client, inactivity_threshold_weeks
     try:
         from datetime import timedelta
         
-        # Optimized approach: Get all data in minimal queries instead of per-player queries
-        # First, get all players
-        players_response = supabase_client.table("players").select("id, created_at, inactive").execute()
-        if not players_response.data:
-            return True
+        # Use raw SQL query for efficiency - calculate everything in the database
+        threshold_date = datetime.datetime.now(datetime.timezone.utc) - timedelta(weeks=inactivity_threshold_weeks)
+        threshold_date_str = threshold_date.isoformat()
         
-        # Get all match participants with match dates in one query
-        # We'll use a join query through the Supabase client
-        # Get all non-CPU participants with their match dates
-        participants_response = supabase_client.table("match_participants")\
-            .select("player, match_id, matches!inner(created_at, archived)")\
-            .eq("is_cpu", False)\
-            .execute()
+        # Execute raw SQL query to get players that need status updates
+        query = f"""
+        WITH player_last_match AS (
+            SELECT DISTINCT ON (p.id)
+                p.id,
+                p.inactive as current_inactive,
+                COALESCE(MAX(m.created_at), p.created_at) as last_activity
+            FROM players p
+            LEFT JOIN match_participants mp ON mp.player = p.id AND mp.is_cpu = false
+            LEFT JOIN matches m ON m.id = mp.match_id AND m.archived = false
+            GROUP BY p.id, p.inactive, p.created_at
+        )
+        SELECT 
+            id,
+            current_inactive,
+            last_activity < '{threshold_date_str}'::timestamptz as should_be_inactive
+        FROM player_last_match
+        WHERE current_inactive != (last_activity < '{threshold_date_str}'::timestamptz)
+        """
         
-        # Build a map of player_id -> last_match_date
-        player_last_matches = {}
-        if participants_response.data:
-            for participant in participants_response.data:
-                player_id = participant['player']
-                match_data = participant.get('matches', {})
-                if match_data and not match_data.get('archived', False):
-                    match_date_str = match_data.get('created_at')
-                    if match_date_str:
-                        # Parse date
-                        if isinstance(match_date_str, str):
-                            if match_date_str.endswith('Z'):
-                                match_date = datetime.datetime.fromisoformat(match_date_str.replace('Z', '+00:00'))
-                            elif '+' in match_date_str:
-                                match_date = datetime.datetime.fromisoformat(match_date_str)
-                            else:
-                                match_date = datetime.datetime.fromisoformat(match_date_str).replace(tzinfo=datetime.timezone.utc)
-                        else:
-                            match_date = match_date_str
+        try:
+            # Execute using Supabase RPC
+            result = supabase_client.rpc('exec_sql', {'query': query}).execute()
+            updates_needed = result.data if result.data else []
+        except Exception as e:
+            # If RPC doesn't exist, fall back to the postgrest query syntax
+            # Use a simpler approach with PostgREST
+            print(f"RPC not available, using alternative approach: {e}")
+            
+            # Get player activity using PostgREST joins
+            result = supabase_client.from_('players').select("""
+                id,
+                inactive,
+                created_at,
+                match_participants!left(
+                    matches!inner(
+                        created_at
+                    )
+                )
+            """).execute()
+            
+            updates_needed = []
+            now = datetime.datetime.now(datetime.timezone.utc)
+            
+            for player in result.data:
+                player_id = player['id']
+                current_inactive = player.get('inactive', False)
+                created_at_str = player['created_at']
+                
+                # Parse creation date
+                if isinstance(created_at_str, str):
+                    created_at = datetime.datetime.fromisoformat(created_at_str.replace('Z', '+00:00') if created_at_str.endswith('Z') else created_at_str)
+                else:
+                    created_at = created_at_str
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+                
+                # Find most recent match
+                last_activity = created_at
+                participants = player.get('match_participants', [])
+                for participant in participants:
+                    if participant and 'matches' in participant and participant['matches']:
+                        match_date_str = participant['matches'].get('created_at')
+                        if match_date_str:
+                            match_date = datetime.datetime.fromisoformat(match_date_str.replace('Z', '+00:00') if match_date_str.endswith('Z') else match_date_str)
                             if match_date.tzinfo is None:
                                 match_date = match_date.replace(tzinfo=datetime.timezone.utc)
-                        
-                        # Keep the most recent match date
-                        if player_id not in player_last_matches or match_date > player_last_matches[player_id]:
-                            player_last_matches[player_id] = match_date
+                            if match_date > last_activity:
+                                last_activity = match_date
+                
+                # Check if inactive status should change
+                should_be_inactive = (now - last_activity).days >= (inactivity_threshold_weeks * 7)
+                if should_be_inactive != current_inactive:
+                    updates_needed.append({
+                        'id': player_id,
+                        'should_be_inactive': should_be_inactive
+                    })
         
-        # Process all players and batch updates
+        # Apply updates
         updated_count = 0
         activated_count = 0
         deactivated_count = 0
-        updates_to_apply = []
         
-        now = datetime.datetime.now(datetime.timezone.utc)
-        threshold_days = inactivity_threshold_weeks * 7
-        
-        for player in players_response.data:
-            player_id = player['id']
-            current_inactive = player.get('inactive', False)
-            
-            # Get last match date or use account creation date
-            if player_id in player_last_matches:
-                last_match_date = player_last_matches[player_id]
-                days_since = (now - last_match_date).days
-                should_be_inactive = days_since >= threshold_days
-            else:
-                # No matches - use account creation date
-                created_at_str = player['created_at']
-                if isinstance(created_at_str, str):
-                    if created_at_str.endswith('Z'):
-                        created_at = datetime.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
-                    elif '+' in created_at_str:
-                        created_at = datetime.datetime.fromisoformat(created_at_str)
-                    else:
-                        created_at = datetime.datetime.fromisoformat(created_at_str).replace(tzinfo=datetime.timezone.utc)
+        for update in updates_needed:
+            try:
+                should_be_inactive = update.get('should_be_inactive', False)
+                supabase_client.table("players")\
+                    .update({"inactive": should_be_inactive})\
+                    .eq("id", update['id'])\
+                    .execute()
+                updated_count += 1
+                if should_be_inactive:
+                    deactivated_count += 1
                 else:
-                    created_at = created_at_str
-                    if created_at.tzinfo is None:
-                        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
-                
-                account_age_days = (now - created_at).days
-                should_be_inactive = account_age_days >= threshold_days
-            
-            # Only update if status changed
-            if should_be_inactive != current_inactive:
-                updates_to_apply.append({
-                    'id': player_id,
-                    'inactive': should_be_inactive
-                })
-        
-        # Batch update all players that need status changes
-        if updates_to_apply:
-            # Supabase doesn't support batch updates directly, so we'll update in chunks
-            chunk_size = 100
-            for i in range(0, len(updates_to_apply), chunk_size):
-                chunk = updates_to_apply[i:i + chunk_size]
-                for update in chunk:
-                    try:
-                        supabase_client.table("players")\
-                            .update({"inactive": update['inactive']})\
-                            .eq("id", update['id'])\
-                            .execute()
-                        updated_count += 1
-                        if update['inactive']:
-                            deactivated_count += 1
-                        else:
-                            activated_count += 1
-                    except Exception as e:
-                        print(f"Error updating player {update['id']}: {e}")
+                    activated_count += 1
+            except Exception as e:
+                print(f"Error updating player {update['id']}: {e}")
         
         if updated_count > 0:
             print(f"Inactivity status updated: {updated_count} players changed ({activated_count} activated, {deactivated_count} deactivated)")
