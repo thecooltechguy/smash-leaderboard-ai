@@ -380,15 +380,12 @@ keep the following in mind:
                 winner_index = 1 if players[0]['has_won'] else 2
                 winner = 'A' if winner_index == 1 else 'B'
                 
-                # Use shared ELO calculation with automatic rank ceiling detection
-                new_elo_1, new_elo_2, ceiling_applied = calculate_elo_update_for_streaming(
+                # Use shared ELO calculation
+                new_elo_1, new_elo_2 = calculate_elo_update_for_streaming(
                     old_elo_1, old_elo_2, winner,
                     players[0]['id'], players[1]['id'],
                     supabase_client
                 )
-                
-                if ceiling_applied:
-                    self.logger.info("    🚫 Rank ceiling applied!")
                 
                 self.update_player_elo(players[0]['id'], new_elo_1)
                 self.update_player_elo(players[1]['id'], new_elo_2)
@@ -397,9 +394,8 @@ keep the following in mind:
                 elo_change_1 = new_elo_1 - old_elo_1
                 elo_change_2 = new_elo_2 - old_elo_2
                 
-                ceiling_status = " (with rank ceiling)" if ceiling_applied else ""
-                self.logger.info(f"  {players[0]['name']}: {old_elo_1} → {new_elo_1} ({elo_change_1:+d}){ceiling_status}")
-                self.logger.info(f"  {players[1]['name']}: {old_elo_2} → {new_elo_2} ({elo_change_2:+d}){ceiling_status}")
+                self.logger.info(f"  {players[0]['name']}: {old_elo_1} → {new_elo_1} ({elo_change_1:+d})")
+                self.logger.info(f"  {players[1]['name']}: {old_elo_2} → {new_elo_2} ({elo_change_2:+d})")
             
             self.logger.info("=" * 60)
             return True
