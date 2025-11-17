@@ -12,6 +12,7 @@ This script provides utilities for managing the advanced ELO system including:
 import argparse
 import datetime
 from capture_card_processor import AdvancedEloSystem, supabase_client
+from elo_utils import update_inactivity_status
 
 def show_rankings(limit: int = 20):
     """Show current player rankings"""
@@ -223,6 +224,7 @@ def main():
     parser.add_argument('--limit', type=int, default=20, help='Limit number of players to show in rankings (default: 20)')
     parser.add_argument('--player-stats', '-p', type=str, help='Show detailed stats for a specific player')
     parser.add_argument('--inactivity-penalties', '-i', action='store_true', help='Run inactivity penalty system')
+    parser.add_argument('--update-inactivity', '-u', nargs='?', const=4, type=int, metavar='WEEKS', help='Update player inactivity status (default: 4 weeks threshold)')
     parser.add_argument('--daily-stats', '-d', type=str, help='Show daily stats for a specific date (YYYY-MM-DD format, default: today)')
     parser.add_argument('--today', action='store_true', help='Show today\'s stats')
     
@@ -234,6 +236,14 @@ def main():
         show_player_stats(args.player_stats)
     elif args.inactivity_penalties:
         run_inactivity_penalties()
+    elif args.update_inactivity is not None:
+        # args.update_inactivity will be 4 (const) if flag provided without value, or the provided value
+        weeks = args.update_inactivity
+        print(f"Updating inactivity status (threshold: {weeks} weeks)...")
+        if not supabase_client:
+            print("Error: Supabase client not available")
+            return
+        update_inactivity_status(supabase_client, inactivity_threshold_weeks=weeks)
     elif args.daily_stats:
         show_daily_stats(args.daily_stats)
     elif args.today:
@@ -244,6 +254,7 @@ def main():
         print("  python elo_manager.py --rankings")
         print("  python elo_manager.py --player-stats 'PlayerName'")
         print("  python elo_manager.py --inactivity-penalties")
+        print("  python elo_manager.py --update-inactivity [WEEKS]")
         print("  python elo_manager.py --today")
 
 if __name__ == "__main__":

@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 import re
 import pandas as pd
 import pytz
-from elo_utils import calculate_elo_update_for_streaming
+from elo_utils import calculate_elo_update_for_streaming, update_inactivity_status
 
 # Load environment variables
 load_dotenv()
@@ -394,6 +394,10 @@ keep the following in mind:
                 
                 self.logger.info(f"  {players[0]['name']}: {old_elo_1} → {new_elo_1} ({elo_change_1:+d})")
                 self.logger.info(f"  {players[1]['name']}: {old_elo_2} → {new_elo_2} ({elo_change_2:+d})")
+            
+            # Update inactivity status for all players
+            self.logger.info("Updating inactivity status...")
+            update_inactivity_status(supabase_client)
             
             self.logger.info("=" * 60)
             return True

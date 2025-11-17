@@ -294,6 +294,165 @@ def update_elo(rating_a: float, rating_b: float, winner: str, k: int = 32) -> tu
 
 
 
+def update_inactivity_status(supabase_client: Client, inactivity_threshold_weeks: int = 4) -> bool:
+    """
+    Update player inactivity status based on last match date.
+    Players with no matches in the last N weeks are marked as inactive.
+    
+    Args:
+        supabase_client: Supabase client instance
+        inactivity_threshold_weeks: Number of weeks of inactivity before marking as inactive (default: 4)
+    
+    Returns:
+        bool: True if update succeeded, False otherwise
+    """
+    try:
+        from datetime import timedelta
+        
+        # Calculate threshold date (N weeks ago)
+        threshold_date = datetime.datetime.now(datetime.timezone.utc) - timedelta(weeks=inactivity_threshold_weeks)
+        
+        # Get all players
+        players_response = supabase_client.table("players").select("id, created_at, inactive").execute()
+        if not players_response.data:
+            return True
+        
+        players = players_response.data
+        updated_count = 0
+        activated_count = 0
+        deactivated_count = 0
+        
+        # Get last match date for each player
+        for player in players:
+            player_id = player['id']
+            current_inactive = player.get('inactive', False)
+            
+            # Get last match date for this player (from non-CPU, non-archived matches)
+            participants_response = supabase_client.table("match_participants")\
+                .select("match_id")\
+                .eq("player", player_id)\
+                .eq("is_cpu", False)\
+                .execute()
+            
+            if not participants_response.data:
+                # Player has no matches - mark inactive if account created > threshold weeks ago
+                created_at_str = player['created_at']
+                if isinstance(created_at_str, str):
+                    if created_at_str.endswith('Z'):
+                        created_at = datetime.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                    elif '+' in created_at_str or created_at_str.endswith('UTC'):
+                        created_at = datetime.datetime.fromisoformat(created_at_str.replace('UTC', '+00:00'))
+                    else:
+                        created_at = datetime.datetime.fromisoformat(created_at_str).replace(tzinfo=datetime.timezone.utc)
+                else:
+                    created_at = created_at_str
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+                
+                account_age = datetime.datetime.now(datetime.timezone.utc) - created_at
+                should_be_inactive = account_age > timedelta(weeks=inactivity_threshold_weeks)
+                
+                if should_be_inactive != current_inactive:
+                    supabase_client.table("players")\
+                        .update({"inactive": should_be_inactive})\
+                        .eq("id", player_id)\
+                        .execute()
+                    updated_count += 1
+                    if should_be_inactive:
+                        deactivated_count += 1
+                    else:
+                        activated_count += 1
+                continue
+            
+            match_ids = [p['match_id'] for p in participants_response.data]
+            
+            # Get most recent match date
+            matches_response = supabase_client.table("matches")\
+                .select("created_at")\
+                .in_("id", match_ids)\
+                .eq("archived", False)\
+                .order("created_at", desc=True)\
+                .limit(1)\
+                .execute()
+            
+            if not matches_response.data:
+                # No valid matches found - mark inactive if account created > threshold weeks ago
+                created_at_str = player['created_at']
+                if isinstance(created_at_str, str):
+                    if created_at_str.endswith('Z'):
+                        created_at = datetime.datetime.fromisoformat(created_at_str.replace('Z', '+00:00'))
+                    elif '+' in created_at_str or created_at_str.endswith('UTC'):
+                        created_at = datetime.datetime.fromisoformat(created_at_str.replace('UTC', '+00:00'))
+                    else:
+                        created_at = datetime.datetime.fromisoformat(created_at_str).replace(tzinfo=datetime.timezone.utc)
+                else:
+                    created_at = created_at_str
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+                
+                account_age = datetime.datetime.now(datetime.timezone.utc) - created_at
+                should_be_inactive = account_age > timedelta(weeks=inactivity_threshold_weeks)
+                
+                if should_be_inactive != current_inactive:
+                    supabase_client.table("players")\
+                        .update({"inactive": should_be_inactive})\
+                        .eq("id", player_id)\
+                        .execute()
+                    updated_count += 1
+                    if should_be_inactive:
+                        deactivated_count += 1
+                    else:
+                        activated_count += 1
+                continue
+            
+            last_match_date_str = matches_response.data[0]['created_at']
+            # Parse date and ensure it's timezone-aware
+            if isinstance(last_match_date_str, str):
+                # Handle different date formats
+                if last_match_date_str.endswith('Z'):
+                    last_match_date = datetime.datetime.fromisoformat(last_match_date_str.replace('Z', '+00:00'))
+                elif '+' in last_match_date_str or last_match_date_str.endswith('UTC'):
+                    last_match_date = datetime.datetime.fromisoformat(last_match_date_str.replace('UTC', '+00:00'))
+                else:
+                    # Assume UTC if no timezone info
+                    last_match_date = datetime.datetime.fromisoformat(last_match_date_str).replace(tzinfo=datetime.timezone.utc)
+            else:
+                # If it's already a datetime object, ensure it's timezone-aware
+                last_match_date = last_match_date_str
+                if last_match_date.tzinfo is None:
+                    last_match_date = last_match_date.replace(tzinfo=datetime.timezone.utc)
+            
+            # Determine if player should be inactive
+            now = datetime.datetime.now(datetime.timezone.utc)
+            days_since_last_match = (now - last_match_date).days
+            should_be_inactive = days_since_last_match >= (inactivity_threshold_weeks * 7)
+            
+            # Update if status changed
+            if should_be_inactive != current_inactive:
+                supabase_client.table("players")\
+                    .update({"inactive": should_be_inactive})\
+                    .eq("id", player_id)\
+                    .execute()
+                updated_count += 1
+                if should_be_inactive:
+                    deactivated_count += 1
+                else:
+                    activated_count += 1
+        
+        if updated_count > 0:
+            print(f"Inactivity status updated: {updated_count} players changed ({activated_count} activated, {deactivated_count} deactivated)")
+        else:
+            print("Inactivity status check complete: No changes needed")
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error updating inactivity status: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def calculate_elo_update_for_streaming(rating_a: float, rating_b: float, winner: str,
                                      player_a_id: str, player_b_id: str,
                                      supabase_client: Client, k: int = 32) -> Tuple[int, int]:

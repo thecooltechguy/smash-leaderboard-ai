@@ -13,7 +13,7 @@ import subprocess
 from typing import List, Optional, Dict, Tuple
 import pandas as pd
 import pytz
-from elo_utils import calculate_elo_update_for_streaming
+from elo_utils import calculate_elo_update_for_streaming, update_inactivity_status
 from google import genai
 from google.genai import types
 from pydantic import BaseModel
@@ -1249,6 +1249,10 @@ keep the following in mind:
                 
                 print(f"  {players[0]['name']}: {old_elo_1} → {new_elo_1} ({elo_change_1:+d})")
                 print(f"  {players[1]['name']}: {old_elo_2} → {new_elo_2} ({elo_change_2:+d})")
+            
+            # Update inactivity status for all players
+            print("\nUpdating inactivity status...")
+            update_inactivity_status(self.supabase_client)
             
             print("="*60)
             
