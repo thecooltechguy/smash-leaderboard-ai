@@ -159,8 +159,8 @@ class SmashBrosProcessor:
         self.max_recording_frames = 3600  # Limit to ~1 minute at 60fps to prevent memory issues
         self.frame_skip_count = 0  # Skip frames to reduce memory usage
         self.frame_skip_interval = 2  # Store every 2nd frame to reduce memory usage
-        self.frame_30_image = None  # Store frame 25 (~0.83 seconds at 30fps) for player identification
-        self.current_frame_30_image_path = None  # Path to saved frame 25 image file
+        self.frame_30_image = None  # Store frame 23 (~0.77 seconds at 30fps) for player identification
+        self.current_frame_30_image_path = None  # Path to saved frame 23 image file
         
         # Create output directory
         if not os.path.exists(output_dir):
@@ -570,8 +570,8 @@ class SmashBrosProcessor:
         self.clear_frame_buffers()
         self.current_recording_frame_index = 0
         self.frame_skip_count = 0
-        self.frame_30_image = None  # Reset frame 25 image for new match
-        self.current_frame_30_image_path = None  # Reset frame 25 image path for new match
+        self.frame_30_image = None  # Reset frame 23 image for new match
+        self.current_frame_30_image_path = None  # Reset frame 23 image path for new match
         
         return filepath
     
@@ -734,15 +734,15 @@ class SmashBrosProcessor:
         
         result_out.release()
         
-        # Save frame 25 image if available (for player identification)
+        # Save frame 23 image if available (for player identification)
         # Save it with the same base name as the result screen video for easy matching
         frame_30_image_path = None
         if self.frame_30_image is not None:
             # Use the same base name as the result screen video
             result_base_name = os.path.splitext(result_filename)[0]  # Remove .mp4 extension
-            frame_30_image_path = os.path.join(self.result_screens_dir, f"{result_base_name}_frame_25.png")
+            frame_30_image_path = os.path.join(self.result_screens_dir, f"{result_base_name}_frame_23.png")
             cv2.imwrite(frame_30_image_path, self.frame_30_image)
-            self.logger.info(f"Saved frame 25 image: {os.path.basename(frame_30_image_path)}")
+            self.logger.info(f"Saved frame 23 image: {os.path.basename(frame_30_image_path)}")
         
         # Calculate duration
         duration_seconds = len(result_frames) / self.fps if self.fps > 0 else 0
@@ -752,11 +752,14 @@ class SmashBrosProcessor:
         self.logger.info(f"  Starting from frame with confidence: {best_confidence:.3f}")
         self.logger.info(f"  Frame index in match: {best_frame_index}/{len(self.recording_frames)-1}")
         
-        # Store frame 25 image path for use in get_match_stats
+        # Store frame 23 image path for use in get_match_stats
         self.current_frame_30_image_path = frame_30_image_path
         
         # Extract player stats and save to database (only when NOT in test mode)
         if not self.test_mode:
+            # Capture match ID before background thread starts (it gets reset in stop_match_recording)
+            captured_match_id = self.current_match_id
+            
             # Run match stats processing in background thread to avoid blocking frame processing
             def process_match_results_background():
                 try:
@@ -771,8 +774,8 @@ class SmashBrosProcessor:
                             participant_names = [stat.player_name for stat in match_stats]
                             self.add_metadata_to_mp4(result_filepath, participant_names)
                         
-                        # Save match stats to database (match will be created if eligible)
-                        self.save_match_stats(match_stats)
+                        # Save match stats to database (use captured match ID)
+                        self.save_match_stats(match_stats, match_id=captured_match_id)
                     else:
                         print("Failed to extract match stats, skipping database save")
                 except Exception as e:
@@ -879,11 +882,11 @@ class SmashBrosProcessor:
             if self.out:
                 self.out.write(frame)
             
-            # Capture frame 25 (~0.83 seconds at 30fps) for player identification
-            # Check BEFORE incrementing, so index 24 = frame 25 (0-indexed)
-            if self.current_recording_frame_index == 24:
+            # Capture frame 23 (~0.77 seconds at 30fps) for player identification
+            # Check BEFORE incrementing, so index 22 = frame 23 (0-indexed)
+            if self.current_recording_frame_index == 22:
                 self.frame_30_image = frame.copy()
-                self.logger.info(f"Captured frame 25 (~0.83 seconds into match) for player identification")
+                self.logger.info(f"Captured frame 23 (~0.77 seconds into match) for player identification")
             
             # Store frame and game end confidence for result screen extraction (with frame skipping)
             self.frame_skip_count += 1
@@ -1117,7 +1120,7 @@ class SmashBrosProcessor:
     def get_match_stats(self, match_results_video_filepath: str, slowdown_factor: int = None) -> Optional[List[PlayerStats]]:
         """
         Extract player stats from a match results video using Gemini API
-        Includes frame 25 (~0.83 seconds into match) image to help identify players
+        Includes frame 23 (~0.77 seconds into match) image to help identify players
         """
         if not gemini_client:
             print("Warning: Gemini client not available, skipping stats extraction")
@@ -1151,12 +1154,12 @@ class SmashBrosProcessor:
                     break
                 time.sleep(1)
             
-            # Check if frame 25 image exists and upload it separately
+            # Check if frame 23 image exists and upload it separately
             frame_30_image_path = getattr(self, 'current_frame_30_image_path', None)
             image_file = None
             
             if frame_30_image_path and os.path.exists(frame_30_image_path):
-                print(f"Uploading frame 25 image to Gemini API for player identification...")
+                print(f"Uploading frame 23 image to Gemini API for player identification...")
                 image_file = gemini_client.files.upload(file=frame_30_image_path)
                 
                 # Wait for image file to be processed
@@ -1169,7 +1172,7 @@ class SmashBrosProcessor:
             # Prepare content for Gemini
             # Build the prompt text
             if image_file:
-                frame_30_note = "\n\nIMPORTANT: I've also included a frame captured at 25 frames (~0.83 seconds) into the match recording. This frame shows the character select screen or early game screen which displays player names clearly. Use this image to help identify the player names, as players often click through the result screen menu too quickly.\n"
+                frame_30_note = "\n\nIMPORTANT: I've also included a frame captured at 23 frames (~0.77 seconds) into the match recording. This frame shows the character select screen or early game screen which displays player names clearly. Use this image to help identify the player names, as players often click through the result screen menu too quickly.\n"
             else:
                 frame_30_note = ""
             
@@ -1475,13 +1478,13 @@ keep the following in mind:
                         self.current_result_screen_filepath = new_path
                         self.logger.info(f"Renamed result screen file: {old_filename} -> {new_filename}")
                         
-                        # Also rename the frame 25 image if it exists (should have same base name)
-                        frame_30_old_path = os.path.join(old_dir, f"{timestamp_part}_result_screen_frame_25.png")
+                        # Also rename the frame 23 image if it exists (should have same base name)
+                        frame_30_old_path = os.path.join(old_dir, f"{timestamp_part}_result_screen_frame_23.png")
                         if os.path.exists(frame_30_old_path):
-                            frame_30_new_path = os.path.join(old_dir, f"{match_id}-{timestamp_part}_result_screen_frame_25.png")
+                            frame_30_new_path = os.path.join(old_dir, f"{match_id}-{timestamp_part}_result_screen_frame_23.png")
                             os.rename(frame_30_old_path, frame_30_new_path)
                             self.current_frame_30_image_path = frame_30_new_path
-                            self.logger.info(f"Renamed frame 25 image: {os.path.basename(frame_30_old_path)} -> {os.path.basename(frame_30_new_path)}")
+                            self.logger.info(f"Renamed frame 23 image: {os.path.basename(frame_30_old_path)} -> {os.path.basename(frame_30_new_path)}")
                         
         except Exception as e:
             self.logger.error(f"Error renaming match files: {e}")
