@@ -140,6 +140,7 @@ class SmashBrosProcessor:
         # Match counter
         self.match_counter = 1
         self.current_match_filepath = None
+        self.current_match_id = None  # Store database match ID
         
         # Test mode tracking
         self.current_frame_number = 0
@@ -536,8 +537,20 @@ class SmashBrosProcessor:
         """
         Start recording a new match
         """
+        # Create match in database first to get the match ID
+        if not self.test_mode:
+            self.current_match_id = self.create_match()
+            if self.current_match_id is None:
+                self.logger.warning("Failed to create match in database, using match counter for filename")
+                match_id_str = f"{self.match_counter:03d}"
+            else:
+                match_id_str = str(self.current_match_id)
+        else:
+            # In test mode, use match counter
+            match_id_str = f"{self.match_counter:03d}"
+        
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{self.match_counter:03d}-{timestamp}_match_{self.match_counter:03d}.mp4"
+        filename = f"{match_id_str}-{timestamp}.mp4"
         filepath = os.path.join(self.output_dir, filename)
         
         # Use H.264 codec for better compatibility
@@ -600,6 +613,7 @@ class SmashBrosProcessor:
             self.clear_frame_buffers()
             
             self.match_counter += 1
+            self.current_match_id = None  # Reset match ID for next match
             
             # Cleanup old matches (automatic 30-day retention)
             self.cleanup_old_matches()
@@ -703,7 +717,11 @@ class SmashBrosProcessor:
         
         # Create result screen video filename
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        result_filename = f"{self.match_counter:03d}-{timestamp}_result_screen_match_{self.match_counter:03d}.mp4"
+        if self.current_match_id:
+            match_id_str = str(self.current_match_id)
+        else:
+            match_id_str = f"{self.match_counter:03d}"
+        result_filename = f"{match_id_str}-{timestamp}_result_screen.mp4"
         result_filepath = os.path.join(self.result_screens_dir, result_filename)
         
         # Create video writer for result screens
@@ -744,8 +762,8 @@ class SmashBrosProcessor:
                             participant_names = [stat.player_name for stat in match_stats]
                             self.add_metadata_to_mp4(result_filepath, participant_names)
                         
-                        # Save match stats to database
-                        self.save_match_stats(match_stats)
+                        # Save match stats to database (pass existing match_id if we created it early)
+                        self.save_match_stats(match_stats, match_id=self.current_match_id)
                     else:
                         print("Failed to extract match stats, skipping database save")
                 except Exception as e:
