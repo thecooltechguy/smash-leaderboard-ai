@@ -248,35 +248,25 @@ class SmashBrosProcessor:
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         
-        # Get actual FPS from capture device or video file
-        reported_fps = self.cap.get(cv2.CAP_PROP_FPS)
-        if reported_fps > 0:
-            self.fps = int(reported_fps)
-        elif self.test_mode:
-            # For test mode (video files), FPS should always be available
-            # If not, use a default
-            self.fps = 60
-            self.logger.warning(f"FPS not available from video file, using default: {self.fps}")
-        else:
-            # For live capture, measure FPS by reading a few frames
-            # This consumes frames but it's okay at initialization
-            self.logger.info("FPS not reported by capture device, measuring...")
-            start_time = time.time()
-            frame_count = 0
-            for _ in range(30):  # Sample 30 frames
-                ret, _ = self.cap.read()
-                if ret:
-                    frame_count += 1
-                else:
-                    break
-            elapsed = time.time() - start_time
-            if elapsed > 0 and frame_count > 0:
-                measured_fps = frame_count / elapsed
-                self.fps = int(round(measured_fps))
-                self.logger.info(f"Measured FPS: {self.fps} (from {frame_count} frames in {elapsed:.2f}s)")
+        # Get FPS from capture device or video file
+        if self.test_mode:
+            # For test mode (video files), read FPS from file metadata
+            reported_fps = self.cap.get(cv2.CAP_PROP_FPS)
+            if reported_fps > 0:
+                self.fps = int(reported_fps)
             else:
-                self.fps = 30  # Fallback to 30fps if measurement fails
-                self.logger.warning(f"FPS measurement failed, using fallback: {self.fps}")
+                self.fps = 60
+                self.logger.warning(f"FPS not available from video file, using default: {self.fps}")
+        else:
+            # For live capture, use the FPS we set (60fps)
+            # The device may report incorrectly, so we trust our setting
+            self.fps = 60
+            reported_fps = self.cap.get(cv2.CAP_PROP_FPS)
+            if reported_fps > 0 and abs(reported_fps - 60) < 10:
+                # If reported FPS is close to 60, log it for info
+                self.logger.info(f"Device reports FPS: {reported_fps:.1f}, using 60fps for recording")
+            else:
+                self.logger.info(f"Using 60fps for recording (device reported: {reported_fps:.1f})")
         
         self.logger.info(f"FPS: {self.fps}")
         self.logger.info(f"Capture initialized at {self.width}x{self.height} @ {self.fps}fps")
