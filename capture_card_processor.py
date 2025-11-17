@@ -259,15 +259,11 @@ class SmashBrosProcessor:
                 self.fps = 60
                 self.logger.warning(f"FPS not available from video file, using default: {self.fps}")
         else:
-            # For live capture, use the FPS we set (60fps)
-            # The device may report incorrectly, so we trust our setting
-            self.fps = 60
+            # For live capture, use 30fps (hardcoded for correct playback speed)
+            # The device may report incorrectly, so we use a fixed value
+            self.fps = 30
             reported_fps = self.cap.get(cv2.CAP_PROP_FPS)
-            if reported_fps > 0 and abs(reported_fps - 60) < 10:
-                # If reported FPS is close to 60, log it for info
-                self.logger.info(f"Device reports FPS: {reported_fps:.1f}, using 60fps for recording")
-            else:
-                self.logger.info(f"Using 60fps for recording (device reported: {reported_fps:.1f})")
+            self.logger.info(f"Using 30fps for recording (device reported: {reported_fps:.1f})")
         
         self.logger.info(f"FPS: {self.fps}")
         self.logger.info(f"Capture initialized at {self.width}x{self.height} @ {self.fps}fps")
