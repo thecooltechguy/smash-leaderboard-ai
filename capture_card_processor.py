@@ -1203,12 +1203,8 @@ class SmashBrosProcessor:
             if frame_30_image_path and os.path.exists(frame_30_image_path):
                 frame_30_note = "\n\nIMPORTANT: The video starts with a frame captured exactly 1 second (30 frames) into the match recording. This frame shows the character select screen or early game screen which displays player names clearly. Use this frame to help identify the player names, as players often click through the result screen menu too quickly. After this initial frame, the video shows the result screen.\n"
             
-            contents = [    
-                file,
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(text=f"""Here is a video recording of the results screen of a super smash bros ultimate match.{frame_30_note}
+            # Build the prompt text
+            prompt_text = """Here is a video recording of the results screen of a super smash bros ultimate match.""" + frame_30_note + """
 
 Output the following information about the game's results as valid json following this schema (where it's a list of json objects -- one for each player in the match):
 
@@ -1238,7 +1234,14 @@ keep the following in mind:
 - If all people playing the game have a player name, then is_cpu must be false. If is_cpu is false, then it's impossible to have only 1 player in the match. Really make sure that you have identified all the players in the match. is_cpu is ONLY TRUE if it says "CPU" on the player card. Otherwise, it is false.
 - If you see "mmmmm" as a player name, the player name has 5 'm's as letters. Not more not less.
 - Sometimes the rectangular player card does not show the KO's, Falls, or SD's, but instead shows "READY FOR THE NEXT BATTLE". In this case, set the player name to "unknown" (all in lowercase), with 0 for the total number of KOs, Falls, and SDs and not cpu and not online and not has_won and smash character also as "unknown".
-"""),
+"""
+            
+            contents = [    
+                file,
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(text=prompt_text),
                     ],
                 ),
             ]
