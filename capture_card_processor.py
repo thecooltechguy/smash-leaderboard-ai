@@ -247,9 +247,38 @@ class SmashBrosProcessor:
         # Get actual properties
         self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.fps = 60
-        self.logger.info(f"FPS: {self.fps}")
         
+        # Get actual FPS from capture device or video file
+        reported_fps = self.cap.get(cv2.CAP_PROP_FPS)
+        if reported_fps > 0:
+            self.fps = int(reported_fps)
+        elif self.test_mode:
+            # For test mode (video files), FPS should always be available
+            # If not, use a default
+            self.fps = 60
+            self.logger.warning(f"FPS not available from video file, using default: {self.fps}")
+        else:
+            # For live capture, measure FPS by reading a few frames
+            # This consumes frames but it's okay at initialization
+            self.logger.info("FPS not reported by capture device, measuring...")
+            start_time = time.time()
+            frame_count = 0
+            for _ in range(30):  # Sample 30 frames
+                ret, _ = self.cap.read()
+                if ret:
+                    frame_count += 1
+                else:
+                    break
+            elapsed = time.time() - start_time
+            if elapsed > 0 and frame_count > 0:
+                measured_fps = frame_count / elapsed
+                self.fps = int(round(measured_fps))
+                self.logger.info(f"Measured FPS: {self.fps} (from {frame_count} frames in {elapsed:.2f}s)")
+            else:
+                self.fps = 30  # Fallback to 30fps if measurement fails
+                self.logger.warning(f"FPS measurement failed, using fallback: {self.fps}")
+        
+        self.logger.info(f"FPS: {self.fps}")
         self.logger.info(f"Capture initialized at {self.width}x{self.height} @ {self.fps}fps")
     
     def detect_ready_to_fight(self, frame):
@@ -532,7 +561,7 @@ class SmashBrosProcessor:
         # Store current match filepath for metadata addition later
         self.current_match_filepath = filepath
         
-        self.logger.info(f"Started recording match {self.match_counter}: {filename}")
+        self.logger.info(f"Started recording: {filename}")
         
         # Write buffered frames (pre-game footage)
         # for buffered_frame in self.frame_buffer:
@@ -572,7 +601,7 @@ class SmashBrosProcessor:
         if self.out:
             self.out.release()
             self.out = None
-            self.logger.info(f"Stopped recording match {self.match_counter}")
+            self.logger.info("Stopped recording")
             
             # Extract result screens if we have recorded frames
             self.extract_result_screens()
