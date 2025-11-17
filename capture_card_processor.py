@@ -535,11 +535,7 @@ class SmashBrosProcessor:
         """
         Start recording a new match
         """
-        # Create match in database first (always)
-        if not self.test_mode:
-            self.current_match_id = self.create_match()
-            if self.current_match_id is None:
-                self.logger.warning("Failed to create match in database")
+        # Don't create match in database yet - wait until Gemini processes it and confirms it's eligible
         
         # Use timestamp-only filename initially (will be renamed if eligible)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -757,9 +753,6 @@ class SmashBrosProcessor:
         
         # Extract player stats and save to database (only when NOT in test mode)
         if not self.test_mode:
-            # Capture match ID before background thread starts (it gets reset in stop_match_recording)
-            captured_match_id = self.current_match_id
-            
             # Run match stats processing in background thread to avoid blocking frame processing
             def process_match_results_background():
                 try:
@@ -774,8 +767,8 @@ class SmashBrosProcessor:
                             participant_names = [stat.player_name for stat in match_stats]
                             self.add_metadata_to_mp4(result_filepath, participant_names)
                         
-                        # Save match stats to database (use captured match ID)
-                        self.save_match_stats(match_stats, match_id=captured_match_id)
+                        # Save match stats to database (match will be created here if eligible)
+                        self.save_match_stats(match_stats)
                     else:
                         print("Failed to extract match stats, skipping database save")
                 except Exception as e:
@@ -1330,16 +1323,17 @@ keep the following in mind:
             print("Match has unknown players (Player 1,2,3,etc.), skipping database save")
             return
 
-        # Use existing match_id (created when recording started)
+        # Match passed all eligibility checks - NOW create the match record
         try:
             if match_id is None:
-                match_id = self.current_match_id
+                # Create match in database now that we know it's eligible
+                match_id = self.create_match()
             
             if match_id is None:
-                self.logger.error("No match ID available, cannot save match stats")
+                self.logger.error("Failed to create match in database")
                 return
             
-            # Match passed all eligibility checks - rename files to include match ID
+            # Rename files to include match ID
             self.rename_match_files(match_id)
             
             players = []
