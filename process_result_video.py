@@ -164,12 +164,13 @@ Output the following information about the game's results as valid json followin
 
 keep the following in mind:
 
-- the total number of KOs is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"KOs\" label, then instead, the KO's are counted by counting the number of mini character icons shown under the \"KOs\" section of the character card
-- total number of falls is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"Falls\" label, then instead, the falls are counted by counting the number of mini character icons shown under the \"Falls\" section of the character card
-- total number of SDs is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"SDs\" label, then instead, the SD's are counted by counting the number of mini character icons shown under the \"SDs\" section of the character card
-- \"has_won\" denotes whether or not the character won (labeled with a gold-colored number 1 at the top right of the player card. if there is no such number ranking on the top right, then the character did not win; for \"no contest\" matches, no character wins)
+- A video of the results screen is attached AS WELL as a picture of the vs screen. Use the picture of the vs screen to help you identify the players. and use the results screen video to help you identify the following:
+- the total number of KOs is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"KOs\" label, then instead, the KO's are counted by counting the number of mini character icons shown under the \"KOs\" section of the character card. Otherwise just put 0.
+- total number of falls is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"Falls\" label, then instead, the falls are counted by counting the number of mini character icons shown under the \"Falls\" section of the character card. Otherwise just put 0.
+- total number of SDs is an integer number located to the right of the label, and cannot be null. if you can't see a number next to the \"SDs\" label, then instead, the SD's are counted by counting the number of mini character icons shown under the \"SDs\" section of the character card. Otherwise just put 0.
+- \"has_won\" denotes whether or not the character won (labeled with a gold-colored number 1 at the top right of the player card. if there is no number at all on the top right of the player card (whether 1 or 2 or 3 or 4), then the match is a \"no contest\" and has_won should be false.)
 - \"is_online_match\" There are likely to be 2 players in the match. If you see "onlineacc" as one of the player names, then return true, otherwise it is an offline match. If the player name is not "onlineacc" or "offlineacc", return false.
-- If is_cpu is false, then it's impossible to have only 1 player in the match. Really make sure that you have identified all the players in the match.
+- If is_cpu is false, then it's impossible to have only 1 player in the match. Really make sure that you have identified all the players in the match. Use the picture of the vs screen to help you identify the players.
 """),
                     ],
                 ),
