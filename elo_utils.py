@@ -220,8 +220,8 @@ def recalculate_all_matches_for_player(player_id: str, supabase_client: Client) 
             winner_id = winners[0]
             winner = 'A' if winner_id == player1_id else 'B'
             
-            # Calculate new ELOs using streaming function (this handles rank ceiling too)
-            new_elo_a, new_elo_b, ceiling_applied = calculate_elo_update_for_streaming(
+            # Calculate new ELOs using streaming function
+            new_elo_a, new_elo_b = calculate_elo_update_for_streaming(
                 rating_a, rating_b, winner, player1_id, player2_id, supabase_client
             )
             

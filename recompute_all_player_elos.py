@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 from datetime import datetime, timezone
 import pytz
 from elo_utils import (
-    update_elo, get_inactive_player_last_match_dates_from_dataframes
+    update_elo
 )
 
 # Load environment variables from .env file
@@ -504,36 +504,32 @@ def recompute_all_player_elos():
     # Step 3: First pass - Calculate top_ten_played for all players
     players_with_top_ten = calculate_top_ten_played_pandas(matches_df, participants_df, players_df, original_top_ten_ids)
     
-    # Step 4: Second pass - Calculate ELOs with rank ceiling
-    print("\nCalculating ELOs with rank ceiling...")
-    players_final_ceiling = calculate_elos_pandas(matches_df, participants_df, players_with_top_ten)
+    # Step 4: Second pass - Calculate ELOs
+    print("\nCalculating ELOs...")
+    players_final = calculate_elos_pandas(matches_df, participants_df, players_with_top_ten)
     
-    # Step 5: Calculate ELOs without ceiling for comparison
-    print("\nCalculating ELOs without rank ceiling for comparison...")
-    players_final_no_ceiling = calculate_elos_pandas_no_ceiling(matches_df, participants_df, players_with_top_ten)
-    
-    # Step 6: Update database with ceiling-applied ELOs
-    print("\nUpdating database with rank ceiling ELOs...")
-    for _, player in players_final_ceiling.iterrows():
+    # Step 5: Update database with calculated ELOs
+    print("\nUpdating database with calculated ELOs...")
+    for _, player in players_final.iterrows():
         try:
             update_player_stats_in_db(player['id'], int(player['elo_final']), int(player['top_ten_played_new']))
         except Exception as e:
             print(f"  Failed to update {player['name']}: {e}")
     
-    # Step 7: Print final rankings (exclude 1200 ELO unranked players)
+    # Step 6: Print final rankings (exclude 1200 ELO unranked players)
     print("\n" + "="*60)
-    print("FINAL ELO RANKINGS (WITH RANK CEILING)")
+    print("FINAL ELO RANKINGS")
     print("="*60)
     
     # Sort by final ELO and filter out 1200 ELO players
-    final_rankings_ceiling = players_final_ceiling.sort_values('elo_final', ascending=False)
-    ranked_players = final_rankings_ceiling[final_rankings_ceiling['elo_final'] != 1200]
+    final_rankings = players_final.sort_values('elo_final', ascending=False)
+    ranked_players = final_rankings[final_rankings['elo_final'] != 1200]
     
     for rank, (_, player) in enumerate(ranked_players.iterrows(), 1):
         print(f"{rank:2d}. {player['display_name']:<20} - {int(player['elo_final']):4d} ELO (top_ten_played: {int(player['top_ten_played_new'])})")
     
     print("="*60)
-    print("ELO RECOMPUTATION WITH RANK CEILING COMPLETE!")
+    print("ELO RECOMPUTATION COMPLETE!")
     print("="*60)
 
 if __name__ == "__main__":

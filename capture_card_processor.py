@@ -991,8 +991,6 @@ class SmashBrosProcessor:
         # Return as integers
         return round(new_rating_a), round(new_rating_b)
 
-    # Note: Rank ceiling functions now imported from elo_utils.py
-
 
     
     def get_match_stats(self, match_results_video_filepath: str, slowdown_factor: int = None) -> Optional[List[PlayerStats]]:

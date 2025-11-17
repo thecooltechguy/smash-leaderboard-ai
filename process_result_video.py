@@ -228,8 +228,6 @@ keep the following in mind:
 
         # Return as integers
         return round(new_rating_a), round(new_rating_b)
-
-    # Note: Rank ceiling functions now imported from elo_utils.py
     
     def get_player(self, player_name: str) -> Optional[dict]:
         """Get or create a player in the database"""
