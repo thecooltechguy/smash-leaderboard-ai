@@ -48,7 +48,7 @@ try:
     gemini_client = genai.Client(
         api_key=gemini_api_key,
     )
-    gemini_model = "gemini-2.5-pro-preview-06-05"
+    gemini_model = "gemini-3-pro-preview-11-2025"
 except Exception as e:
     print(f"Warning: Failed to initialize Gemini client: {e}")
     gemini_client = None
